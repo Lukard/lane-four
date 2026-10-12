@@ -1,0 +1,5 @@
+node_modules/
+test/shots/
+test/assets/
+.DS_Store
+.claude-flow/

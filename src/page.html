@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a1330">
+<title>Lane Four</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Big+Shoulders+Display:wght@700;800;900&family=Doto:wght@900&display=swap">
+<style>
+/*STYLE*/
+</style>
+</head>
+<body>
+<canvas id="world" aria-hidden="true"></canvas>
+
+<header id="hud" hidden>
+  <div class="hud-dist">
+    <div class="eyebrow-hud" id="hudEvent">400 m hurdles · Lane 4</div>
+    <div class="dist"><span id="distVal">0</span><span class="unit">m</span></div>
+  </div>
+  <div class="hud-prog">
+    <div id="progress" aria-hidden="true">
+      <div class="rail"><div id="progFill"></div></div>
+      <div id="progTicks"></div>
+    </div>
+  </div>
+  <div class="hud-clock">
+    <div class="board"><span class="led" id="clock">0:00.0</span></div>
+    <div class="hud-buttons">
+      <button class="chip" id="btnSignals" type="button" aria-pressed="false" aria-controls="tune">Signals</button>
+      <button class="chip" id="btnSound" type="button" aria-pressed="true" aria-label="Sound">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"/><path id="soundWave" d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg>
+      </button>
+      <button class="chip" id="btnFull" type="button" aria-label="Full screen">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<footer id="meters" hidden>
+  <div class="cadence">
+    <div class="feet" aria-hidden="true"><span class="foot" id="footL">L</span><span class="foot" id="footR">R</span></div>
+    <div><span class="cad-num" id="cadVal">0</span><span class="meter-label">steps / min</span></div>
+  </div>
+  <div class="squat" id="squatMeter">
+    <div class="squat-bar"><div id="squatFill"></div><div id="squatNotch"></div></div>
+    <span class="meter-label">Squat</span>
+  </div>
+</footer>
+
+<div id="pip" hidden>
+  <video id="cam" playsinline muted autoplay></video>
+  <canvas id="skel"></canvas>
+  <div id="pipTag">You</div>
+</div>
+
+<div id="banner" role="status" aria-live="polite">
+  <div id="bannerMain"></div>
+  <div id="bannerSub"></div>
+  <div id="bannerBar" hidden><i></i></div>
+</div>
+
+<section id="intro" class="sheet" aria-labelledby="introTitle">
+  <div class="card">
+    <div class="lanes" aria-hidden="true"></div>
+    <div class="card-body">
+      <p class="eyebrow">Camera fitness prototype</p>
+      <h1 id="introTitle" aria-label="Lane Four">Lane <span class="lane-num">4</span></h1>
+      <p class="lede">Hurdles in your living room. Jog in place to run, squat to jump. Your camera does the tracking.</p>
+      <ul class="how">
+        <li><b>Set up</b><span>Put your phone or laptop at about waist height, 2 to 3 m away, so you're in the picture from head to feet.</span></li>
+        <li><b>Run</b><span>Jog or march in place. Every step moves your runner, and faster steps mean more speed.</span></li>
+        <li><b>Jump</b><span>Squat as a hurdle comes up and stand to jump. Hold the squat and you'll jump at the hurdle. A deeper squat jumps higher and can grab the star.</span></li>
+      </ul>
+      <div class="pick" role="radiogroup" aria-label="Race distance">
+        <button type="button" role="radio" data-dist="400" aria-checked="true">400 m hurdles<small>10 hurdles · about 2 minutes</small></button>
+        <button type="button" role="radio" data-dist="200" aria-checked="false">200 m hurdles<small>5 hurdles · about 1 minute</small></button>
+      </div>
+      <div class="actions">
+        <button class="btn primary" id="btnCamera" type="button">Start with camera</button>
+        <button class="btn" id="btnManual" type="button">Play with keys or touch</button>
+      </div>
+      <p class="error" id="introError" hidden></p>
+      <p class="fine">Video is processed on this device and never uploaded. The tracking model downloads from Google's servers the first time.</p>
+    </div>
+  </div>
+</section>
+
+<section id="results" class="sheet" hidden aria-labelledby="resTitle">
+  <div class="card">
+    <div class="lanes" aria-hidden="true"></div>
+    <div class="card-body">
+      <p class="eyebrow" id="resEvent">400 m hurdles</p>
+      <h2 id="resTitle">Finished</h2>
+      <div class="result-time"><span class="board"><span class="led" id="resTime">0:00.0</span></span><span class="best" id="resBest"></span></div>
+      <dl class="stats">
+        <div><dt>Hurdles cleared</dt><dd id="resHurdles">0</dd></div>
+        <div><dt>Stars</dt><dd id="resStars">0</dd></div>
+        <div><dt>Squats</dt><dd id="resSquats">0</dd></div>
+        <div><dt>Steps</dt><dd id="resSteps">0</dd></div>
+        <div><dt>Avg cadence</dt><dd id="resCad">0</dd></div>
+        <div><dt>Top speed</dt><dd id="resTop">0</dd></div>
+      </dl>
+      <p class="fine" id="resHint">Raise both hands to race again.</p>
+      <div class="actions">
+        <button class="btn primary" id="btnAgain" type="button">Race again</button>
+        <button class="btn" id="btnSetup" type="button">Back to setup</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<aside id="tune" hidden aria-label="Tracking signals">
+  <header><b>Tracking signals</b><button id="tuneClose" type="button" aria-label="Close signals">×</button></header>
+  <div class="sig">
+    <div class="sig-head"><span>Step signal (feet apart, in leg lengths)</span><span id="sigStepVal">0.00</span></div>
+    <canvas id="sigStep"></canvas>
+  </div>
+  <label class="slider" for="stepT"><span>Step threshold <output id="stepTOut" for="stepT">0.045</output></span><input id="stepT" type="range" min="0.02" max="0.12" step="0.005"></label>
+  <div class="sig">
+    <div class="sig-head"><span>Squat depth (1 = thighs parallel)</span><span id="sigSquatVal">0.00</span></div>
+    <canvas id="sigSquat"></canvas>
+  </div>
+  <label class="slider" for="squatT"><span>Squat depth needed <output id="squatTOut" for="squatT">0.40</output></span><input id="squatT" type="range" min="0.2" max="0.8" step="0.02"></label>
+  <p class="readout" id="readout">Waiting for tracking</p>
+  <div class="tune-actions"><button id="btnRecal" type="button">Recalibrate</button><button id="btnResetT" type="button">Reset thresholds</button></div>
+</aside>
+
+<div id="pads" hidden>
+  <button id="padL" type="button">Left step<small>F or ←</small></button>
+  <button id="padSquat" type="button">Squat<small>Hold, release to jump · Space</small></button>
+  <button id="padR" type="button">Right step<small>J or →</small></button>
+  <button id="padStart" type="button" hidden>Start race<small>Enter</small></button>
+</div>
+
+<script>
+/*CORE*/
+</script>
+<script>
+/*APP*/
+</script>
+</body>
+</html>

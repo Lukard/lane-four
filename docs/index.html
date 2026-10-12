@@ -1,0 +1,2625 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a1330">
+<title>Lane Four</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Big+Shoulders+Display:wght@700;800;900&family=Doto:wght@900&display=swap">
+<style>
+/* Layout: full-bleed night-meet stadium canvas; HUD pinned to the corners like a
+   broadcast graphic; setup and results sit on a timing-board panel. */
+:root {
+  --night: #0a1330;
+  --dusk: #263d70;
+  --board: #070b17;
+  --board-edge: #1f2b4d;
+  --track: #c4472d;
+  --lane: #f4f1e8;
+  --amber: #ffb22e;
+  --amber-ink: #241500;
+  --text: #edf1fa;
+  --muted: #95a4c7;
+  --good: #57d98f;
+  --bad: #ff6155;
+  --display: "Big Shoulders Display", "Arial Narrow", "Roboto Condensed", system-ui, sans-serif;
+  --led: "Doto", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --body: "Barlow", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--night);
+  color: var(--text);
+  font: 400 16px/1.45 var(--body);
+  overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+}
+[hidden] { display: none !important; }
+button { font: inherit; color: inherit; cursor: pointer; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+#world { position: fixed; inset: 0; display: block; width: 100%; height: 100%; }
+
+/* ---------- HUD ---------- */
+#hud {
+  position: fixed; left: 0; right: 0; top: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "dist prog clock";
+  align-items: start;
+  gap: 8px 24px;
+  padding: calc(env(safe-area-inset-top, 0px) + 12px) calc(env(safe-area-inset-right, 0px) + 16px) 0 calc(env(safe-area-inset-left, 0px) + 16px);
+  pointer-events: none;
+}
+.hud-dist { grid-area: dist; min-width: 0; }
+.hud-prog { grid-area: prog; padding-top: 26px; min-width: 0; }
+.hud-clock { grid-area: clock; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.eyebrow-hud {
+  font: 600 12px/1 var(--body); letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+  white-space: nowrap;
+}
+.dist {
+  font: 900 clamp(44px, 10vmin, 96px)/.9 var(--display);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, .35);
+  margin-top: 4px;
+}
+.dist .unit { font-size: .42em; margin-left: .1em; color: var(--muted); font-weight: 700; }
+
+#progress { position: relative; height: 34px; }
+#progress .rail {
+  position: absolute; left: 0; right: 0; top: 20px; height: 6px; border-radius: 3px;
+  background: rgba(244, 241, 232, .16);
+  overflow: hidden;
+}
+#progFill { position: absolute; inset: 0; background: var(--amber); transform-origin: 0 50%; transform: scaleX(0); }
+#progTicks { position: absolute; inset: 0; }
+.tick {
+  position: absolute; top: 14px; width: 4px; height: 18px; margin-left: -2px; border-radius: 2px;
+  background: var(--lane);
+}
+.tick.cleared { background: var(--good); }
+.tick.hit { background: var(--bad); }
+.tick .star {
+  position: absolute; left: 50%; top: -14px; width: 10px; height: 10px; margin-left: -5px;
+  background: var(--amber);
+  clip-path: polygon(50% 0, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
+}
+
+.board {
+  display: inline-flex; align-items: center;
+  background: var(--board);
+  border: 1px solid var(--board-edge);
+  border-radius: 8px;
+  padding: 6px 14px 8px;
+  box-shadow: inset 0 0 0 3px rgba(0, 0, 0, .5), 0 6px 18px rgba(0, 0, 0, .35);
+}
+.led {
+  font: 900 clamp(30px, 6.5vmin, 60px)/1 var(--led);
+  color: var(--amber);
+  text-shadow: 0 0 10px rgba(255, 178, 46, .55);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .02em;
+}
+.hud-buttons { display: flex; gap: 6px; pointer-events: auto; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 600 12px/1 var(--body); letter-spacing: .1em; text-transform: uppercase;
+  background: rgba(7, 11, 23, .66);
+  border: 1px solid var(--board-edge);
+  border-radius: 999px;
+  padding: 8px 12px;
+  min-height: 34px;
+}
+.chip svg { width: 16px; height: 16px; display: block; }
+.chip[aria-pressed="false"] { color: var(--muted); }
+
+@media (max-width: 600px) {
+  #hud { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "dist clock" "prog prog"; }
+  .hud-prog { padding-top: 0; }
+}
+
+/* ---------- bottom meters ---------- */
+#meters {
+  position: fixed; left: 0; bottom: 0;
+  display: flex; align-items: flex-end; gap: 22px;
+  padding: 0 0 calc(env(safe-area-inset-bottom, 0px) + 16px) calc(env(safe-area-inset-left, 0px) + 16px);
+  pointer-events: none;
+}
+body.manual #meters { bottom: calc(96px + env(safe-area-inset-bottom, 0px)); }
+.cadence { display: flex; align-items: flex-end; gap: 12px; }
+.feet { display: flex; gap: 6px; padding-bottom: 6px; }
+.foot {
+  width: 30px; height: 44px; border-radius: 15px 15px 10px 10px;
+  border: 2px solid rgba(244, 241, 232, .35);
+  display: grid; place-items: end center; padding-bottom: 5px;
+  font: 700 12px/1 var(--body); color: var(--muted);
+  transition: background-color .25s, border-color .25s, color .25s;
+}
+.foot.on { background: var(--amber); border-color: var(--amber); color: var(--amber-ink); transition: none; }
+.cad-num { font: 900 clamp(38px, 8vmin, 72px)/.9 var(--display); font-variant-numeric: tabular-nums; }
+.meter-label { display: block; font: 600 11px/1.2 var(--body); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-top: 4px; }
+.squat { display: flex; flex-direction: column; align-items: center; }
+.squat-bar {
+  position: relative; width: 18px; height: clamp(70px, 14vmin, 120px); border-radius: 9px;
+  background: rgba(244, 241, 232, .14); overflow: hidden;
+}
+#squatFill { position: absolute; inset: 0; background: var(--amber); transform-origin: 50% 100%; transform: scaleY(0); }
+.squat.charged #squatFill { background: var(--good); }
+#squatNotch { position: absolute; left: -2px; right: -2px; height: 2px; background: var(--lane); }
+
+/* ---------- camera picture-in-picture ---------- */
+#pip {
+  position: fixed;
+  right: calc(env(safe-area-inset-right, 0px) + 16px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
+  width: clamp(110px, 24vmin, 240px);
+  aspect-ratio: 4 / 3;
+  max-width: 100%;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #000;
+  border: 2px solid var(--board-edge);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .45);
+}
+#pip.bad { border-color: var(--bad); }
+#pip.good { border-color: var(--amber); }
+#pip video, #pip canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+#pip video { opacity: .85; }
+#pipTag {
+  position: absolute; left: 6px; top: 6px;
+  font: 700 10px/1 var(--body); letter-spacing: .12em; text-transform: uppercase;
+  background: rgba(7, 11, 23, .7); border-radius: 4px; padding: 4px 6px;
+}
+
+/* ---------- center banner ---------- */
+#banner {
+  position: fixed; left: 50%; top: 40%;
+  transform: translate(-50%, -50%);
+  width: min(92vw, 860px);
+  text-align: center;
+  pointer-events: none;
+}
+#bannerMain {
+  font: 900 clamp(36px, 8.5vmin, 92px)/.95 var(--display);
+  text-transform: uppercase;
+  letter-spacing: .01em;
+  text-wrap: balance;
+  text-shadow: 0 3px 0 rgba(0, 0, 0, .45), 0 0 30px rgba(10, 19, 48, .9);
+}
+#banner.amber #bannerMain { color: var(--amber); }
+#banner.bad #bannerMain { color: var(--bad); }
+#bannerSub {
+  margin-top: 10px;
+  font: 500 clamp(15px, 2.6vmin, 22px)/1.35 var(--body);
+  color: var(--text);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, .8);
+  text-wrap: balance;
+}
+#bannerBar { margin: 16px auto 0; width: min(60vw, 280px); height: 8px; border-radius: 4px; background: rgba(244, 241, 232, .18); overflow: hidden; }
+#bannerBar i { display: block; height: 100%; background: var(--amber); transform-origin: 0 50%; transform: scaleX(0); }
+.banner-pop { animation: pop .35s cubic-bezier(.2, 1.4, .4, 1); }
+@keyframes pop { from { transform: scale(.8); opacity: .2; } to { transform: scale(1); opacity: 1; } }
+
+/* ---------- sheets (setup, results) ---------- */
+.sheet {
+  position: fixed; inset: 0;
+  z-index: 20;
+  display: flex; flex-direction: column;
+  padding-block: calc(env(safe-area-inset-top, 0px) + 16px) calc(env(safe-area-inset-bottom, 0px) + 16px);
+  padding-inline: 16px;
+  background: linear-gradient(180deg, rgba(6, 10, 26, .35), rgba(6, 10, 26, .82));
+  overflow-y: auto;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.card {
+  margin: auto; /* centers when it fits, scrolls from the top when it doesn't */
+  flex-shrink: 0;
+  width: 100%; max-width: 580px;
+  background: var(--board);
+  border: 1px solid var(--board-edge);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .5);
+}
+/* A strip of running track: tartan with white lane lines. */
+.lanes {
+  height: 14px;
+  background:
+    repeating-linear-gradient(180deg, transparent 0 3px, var(--lane) 3px 4px),
+    var(--track);
+}
+.card-body { padding: clamp(20px, 4.5vmin, 36px); display: flex; flex-direction: column; gap: 18px; }
+.eyebrow { margin: 0; font: 600 12px/1 var(--body); letter-spacing: .16em; text-transform: uppercase; color: var(--amber); }
+.card h1, .card h2 { margin: 0; font-family: var(--display); font-weight: 900; line-height: .85; text-wrap: balance; }
+.card h1 { font-size: clamp(60px, 13vmin, 112px); letter-spacing: -.01em; }
+.card h1 .lane-num {
+  display: inline-grid; place-items: center;
+  width: .9em; height: .9em; margin-left: .08em; vertical-align: -.06em;
+  background: var(--track); color: var(--lane); border-radius: .08em;
+  font-size: .62em; line-height: 1;
+}
+.card h2 { font-size: clamp(44px, 9vmin, 72px); }
+.lede { margin: 0; font-size: clamp(17px, 2.4vmin, 20px); color: var(--text); max-width: 46ch; }
+.how { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.how li { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 12px; align-items: baseline; }
+.how b { white-space: nowrap; }
+.how b { font: 800 18px/1 var(--display); letter-spacing: .06em; text-transform: uppercase; color: var(--amber); }
+.how span { color: var(--text); font-size: 15px; }
+.pick { display: flex; gap: 8px; flex-wrap: wrap; }
+.pick button {
+  flex: 1 1 140px;
+  border: 1px solid var(--board-edge); background: transparent; border-radius: 10px;
+  padding: 10px 12px; text-align: left;
+  font: 600 15px/1.2 var(--body);
+}
+.pick button small { display: block; font-weight: 400; color: var(--muted); font-size: 13px; margin-top: 2px; }
+.pick button[aria-checked="true"] { border-color: var(--amber); box-shadow: inset 0 0 0 1px var(--amber); }
+.actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.btn {
+  flex: 1 1 200px; min-height: 52px;
+  border-radius: 10px; padding: 12px 18px;
+  font: 800 19px/1 var(--display); letter-spacing: .06em; text-transform: uppercase;
+  border: 1px solid var(--board-edge); background: transparent;
+}
+.btn.primary { background: var(--amber); border-color: var(--amber); color: var(--amber-ink); }
+.btn[disabled] { opacity: .55; cursor: progress; }
+.fine { margin: 0; font-size: 13px; color: var(--muted); }
+.error { margin: 0; padding: 10px 12px; border-radius: 8px; background: rgba(255, 97, 85, .12); color: #ffb3ad; font-size: 14px; }
+.keys { font-size: 13px; color: var(--muted); margin: 0; }
+kbd {
+  font: 600 12px/1 var(--body); padding: 3px 6px; border-radius: 4px;
+  border: 1px solid var(--board-edge); background: rgba(244, 241, 232, .06); color: var(--text);
+}
+
+.result-time { align-self: flex-start; }
+.result-time .led { font-size: clamp(48px, 11vmin, 92px); }
+.best { font: 700 13px/1 var(--body); letter-spacing: .12em; text-transform: uppercase; color: var(--good); margin-left: 12px; }
+.stats { margin: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 18px; }
+.stats div { min-width: 0; }
+.stats dt { font: 600 11px/1.2 var(--body); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.stats dd { margin: 4px 0 0; font: 800 clamp(24px, 4.5vmin, 34px)/1 var(--display); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.stats dd small { font: 600 .5em/1 var(--body); color: var(--muted); letter-spacing: .04em; }
+@media (max-width: 420px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* ---------- signals panel ---------- */
+#tune {
+  position: fixed;
+  z-index: 30;
+  left: calc(env(safe-area-inset-left, 0px) + 16px);
+  top: calc(env(safe-area-inset-top, 0px) + 150px);
+  width: min(340px, calc(100vw - 32px));
+  max-height: calc(100% - 180px);
+  overflow-y: auto;
+  background: rgba(7, 11, 23, .94);
+  border: 1px solid var(--board-edge);
+  border-radius: 12px;
+  padding: 12px 14px 14px;
+  display: flex; flex-direction: column; gap: 10px;
+  font-size: 13px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .45);
+}
+#tune header { display: flex; justify-content: space-between; align-items: center; }
+#tune header b { font: 800 16px/1 var(--display); letter-spacing: .06em; text-transform: uppercase; }
+#tuneClose { background: none; border: 0; font-size: 22px; line-height: 1; padding: 4px 8px; color: var(--muted); }
+.sig-head { display: flex; justify-content: space-between; color: var(--muted); font-variant-numeric: tabular-nums; margin-bottom: 4px; }
+.sig canvas { width: 100%; height: 72px; display: block; border-radius: 6px; background: rgba(244, 241, 232, .04); }
+.slider { display: flex; flex-direction: column; gap: 6px; }
+.slider span { display: flex; justify-content: space-between; }
+.slider output { font-variant-numeric: tabular-nums; color: var(--amber); }
+.slider input { width: 100%; accent-color: var(--amber); }
+.readout { margin: 0; color: var(--muted); font-variant-numeric: tabular-nums; line-height: 1.5; }
+.tune-actions { display: flex; gap: 8px; }
+.tune-actions button { flex: 1; border: 1px solid var(--board-edge); background: transparent; border-radius: 8px; padding: 8px; font-weight: 600; }
+
+/* ---------- touch pads (keys/touch mode) ---------- */
+#pads {
+  position: fixed; left: 0; right: 0; bottom: 0;
+  display: grid; grid-template-columns: 1fr 1.3fr 1fr; gap: 10px;
+  padding: 0 calc(env(safe-area-inset-right, 0px) + 16px) calc(env(safe-area-inset-bottom, 0px) + 12px) calc(env(safe-area-inset-left, 0px) + 16px);
+}
+#pads button {
+  min-height: 72px; border-radius: 14px;
+  background: rgba(7, 11, 23, .72);
+  border: 1px solid var(--board-edge);
+  font: 800 18px/1.1 var(--display); letter-spacing: .06em; text-transform: uppercase;
+  touch-action: none;
+}
+#pads button small { display: block; font: 500 11px/1.2 var(--body); letter-spacing: .04em; text-transform: none; color: var(--muted); margin-top: 4px; }
+#pads button.active { background: var(--amber); color: var(--amber-ink); border-color: var(--amber); }
+#pads button.active small { color: var(--amber-ink); }
+#padStart { grid-column: 1 / -1; background: var(--amber) !important; color: var(--amber-ink); border-color: var(--amber) !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .banner-pop { animation: none; }
+  .foot { transition: none; }
+}
+
+</style>
+</head>
+<body>
+<canvas id="world" aria-hidden="true"></canvas>
+
+<header id="hud" hidden>
+  <div class="hud-dist">
+    <div class="eyebrow-hud" id="hudEvent">400 m hurdles · Lane 4</div>
+    <div class="dist"><span id="distVal">0</span><span class="unit">m</span></div>
+  </div>
+  <div class="hud-prog">
+    <div id="progress" aria-hidden="true">
+      <div class="rail"><div id="progFill"></div></div>
+      <div id="progTicks"></div>
+    </div>
+  </div>
+  <div class="hud-clock">
+    <div class="board"><span class="led" id="clock">0:00.0</span></div>
+    <div class="hud-buttons">
+      <button class="chip" id="btnSignals" type="button" aria-pressed="false" aria-controls="tune">Signals</button>
+      <button class="chip" id="btnSound" type="button" aria-pressed="true" aria-label="Sound">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"/><path id="soundWave" d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg>
+      </button>
+      <button class="chip" id="btnFull" type="button" aria-label="Full screen">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<footer id="meters" hidden>
+  <div class="cadence">
+    <div class="feet" aria-hidden="true"><span class="foot" id="footL">L</span><span class="foot" id="footR">R</span></div>
+    <div><span class="cad-num" id="cadVal">0</span><span class="meter-label">steps / min</span></div>
+  </div>
+  <div class="squat" id="squatMeter">
+    <div class="squat-bar"><div id="squatFill"></div><div id="squatNotch"></div></div>
+    <span class="meter-label">Squat</span>
+  </div>
+</footer>
+
+<div id="pip" hidden>
+  <video id="cam" playsinline muted autoplay></video>
+  <canvas id="skel"></canvas>
+  <div id="pipTag">You</div>
+</div>
+
+<div id="banner" role="status" aria-live="polite">
+  <div id="bannerMain"></div>
+  <div id="bannerSub"></div>
+  <div id="bannerBar" hidden><i></i></div>
+</div>
+
+<section id="intro" class="sheet" aria-labelledby="introTitle">
+  <div class="card">
+    <div class="lanes" aria-hidden="true"></div>
+    <div class="card-body">
+      <p class="eyebrow">Camera fitness prototype</p>
+      <h1 id="introTitle" aria-label="Lane Four">Lane <span class="lane-num">4</span></h1>
+      <p class="lede">Hurdles in your living room. Jog in place to run, squat to jump. Your camera does the tracking.</p>
+      <ul class="how">
+        <li><b>Set up</b><span>Put your phone or laptop at about waist height, 2 to 3 m away, so you're in the picture from head to feet.</span></li>
+        <li><b>Run</b><span>Jog or march in place. Every step moves your runner, and faster steps mean more speed.</span></li>
+        <li><b>Jump</b><span>Squat as a hurdle comes up and stand to jump. Hold the squat and you'll jump at the hurdle. A deeper squat jumps higher and can grab the star.</span></li>
+      </ul>
+      <div class="pick" role="radiogroup" aria-label="Race distance">
+        <button type="button" role="radio" data-dist="400" aria-checked="true">400 m hurdles<small>10 hurdles · about 2 minutes</small></button>
+        <button type="button" role="radio" data-dist="200" aria-checked="false">200 m hurdles<small>5 hurdles · about 1 minute</small></button>
+      </div>
+      <div class="actions">
+        <button class="btn primary" id="btnCamera" type="button">Start with camera</button>
+        <button class="btn" id="btnManual" type="button">Play with keys or touch</button>
+      </div>
+      <p class="error" id="introError" hidden></p>
+      <p class="fine">Video is processed on this device and never uploaded. The tracking model downloads from Google's servers the first time.</p>
+    </div>
+  </div>
+</section>
+
+<section id="results" class="sheet" hidden aria-labelledby="resTitle">
+  <div class="card">
+    <div class="lanes" aria-hidden="true"></div>
+    <div class="card-body">
+      <p class="eyebrow" id="resEvent">400 m hurdles</p>
+      <h2 id="resTitle">Finished</h2>
+      <div class="result-time"><span class="board"><span class="led" id="resTime">0:00.0</span></span><span class="best" id="resBest"></span></div>
+      <dl class="stats">
+        <div><dt>Hurdles cleared</dt><dd id="resHurdles">0</dd></div>
+        <div><dt>Stars</dt><dd id="resStars">0</dd></div>
+        <div><dt>Squats</dt><dd id="resSquats">0</dd></div>
+        <div><dt>Steps</dt><dd id="resSteps">0</dd></div>
+        <div><dt>Avg cadence</dt><dd id="resCad">0</dd></div>
+        <div><dt>Top speed</dt><dd id="resTop">0</dd></div>
+      </dl>
+      <p class="fine" id="resHint">Raise both hands to race again.</p>
+      <div class="actions">
+        <button class="btn primary" id="btnAgain" type="button">Race again</button>
+        <button class="btn" id="btnSetup" type="button">Back to setup</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<aside id="tune" hidden aria-label="Tracking signals">
+  <header><b>Tracking signals</b><button id="tuneClose" type="button" aria-label="Close signals">×</button></header>
+  <div class="sig">
+    <div class="sig-head"><span>Step signal (feet apart, in leg lengths)</span><span id="sigStepVal">0.00</span></div>
+    <canvas id="sigStep"></canvas>
+  </div>
+  <label class="slider" for="stepT"><span>Step threshold <output id="stepTOut" for="stepT">0.045</output></span><input id="stepT" type="range" min="0.02" max="0.12" step="0.005"></label>
+  <div class="sig">
+    <div class="sig-head"><span>Squat depth (1 = thighs parallel)</span><span id="sigSquatVal">0.00</span></div>
+    <canvas id="sigSquat"></canvas>
+  </div>
+  <label class="slider" for="squatT"><span>Squat depth needed <output id="squatTOut" for="squatT">0.40</output></span><input id="squatT" type="range" min="0.2" max="0.8" step="0.02"></label>
+  <p class="readout" id="readout">Waiting for tracking</p>
+  <div class="tune-actions"><button id="btnRecal" type="button">Recalibrate</button><button id="btnResetT" type="button">Reset thresholds</button></div>
+</aside>
+
+<div id="pads" hidden>
+  <button id="padL" type="button">Left step<small>F or ←</small></button>
+  <button id="padSquat" type="button">Squat<small>Hold, release to jump · Space</small></button>
+  <button id="padR" type="button">Right step<small>J or →</small></button>
+  <button id="padStart" type="button" hidden>Start race<small>Enter</small></button>
+</div>
+
+<script>
+/* Lane Four core: pose signals, detectors and race simulation.
+   No DOM access, so the same code runs in the browser and in Node tests. */
+(function (root) {
+  'use strict';
+
+  // MediaPipe Pose landmark indices we use.
+  const LM = Object.freeze({
+    NOSE: 0, L_SHOULDER: 11, R_SHOULDER: 12, L_ELBOW: 13, R_ELBOW: 14,
+    L_WRIST: 15, R_WRIST: 16, L_HIP: 23, R_HIP: 24, L_KNEE: 25, R_KNEE: 26,
+    L_ANKLE: 27, R_ANKLE: 28,
+  });
+  const TRACKED = new Set([0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28]);
+
+  // All pose math happens in a virtual frame 480 units tall, so filter and
+  // threshold values don't depend on the camera's real resolution.
+  const FRAME_H = 480;
+
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  const mix = (a, b, k) => a + (b - a) * k;
+  const mean = (arr) => arr.reduce((s, v) => s + v, 0) / (arr.length || 1);
+  const sd = (arr) => {
+    const m = mean(arr);
+    return Math.sqrt(mean(arr.map((v) => (v - m) * (v - m))));
+  };
+
+  // ---------------------------------------------------------------------------
+  // One Euro filter (Casiez et al. 2012): smooths jitter at rest, stays
+  // responsive during fast motion.
+  class OneEuro {
+    constructor(minCutoff = 1.7, beta = 0.03, dCutoff = 1.0) {
+      this.minCutoff = minCutoff;
+      this.beta = beta;
+      this.dCutoff = dCutoff;
+      this.reset();
+    }
+    reset() { this.x = null; this.dx = 0; this.t = null; }
+    static alpha(cutoff, dt) {
+      const tau = 1 / (2 * Math.PI * cutoff);
+      return 1 / (1 + tau / dt);
+    }
+    filter(x, t) {
+      if (this.x === null) { this.x = x; this.t = t; this.dx = 0; return x; }
+      const dt = t - this.t;
+      if (dt <= 0) return this.x;
+      if (dt > 0.5) { this.x = x; this.t = t; this.dx = 0; return x; } // tracking gap
+      const dx = (x - this.x) / dt;
+      this.dx += OneEuro.alpha(this.dCutoff, dt) * (dx - this.dx);
+      const cutoff = this.minCutoff + this.beta * Math.abs(this.dx);
+      this.x += OneEuro.alpha(cutoff, dt) * (x - this.x);
+      this.t = t;
+      return this.x;
+    }
+  }
+
+  // Converts MediaPipe's normalized landmarks to virtual-frame units and
+  // smooths the joints the game reads.
+  class PoseSmoother {
+    constructor(minCutoff = 1.7, beta = 0.03) {
+      this.minCutoff = minCutoff;
+      this.beta = beta;
+      this.filters = new Map();
+    }
+    reset() { this.filters.clear(); }
+    apply(landmarks, aspect, t) {
+      const fw = FRAME_H * aspect;
+      const pts = new Array(33);
+      for (let i = 0; i < 33; i++) {
+        const lm = landmarks[i];
+        if (!lm) { pts[i] = null; continue; }
+        let x = lm.x * fw;
+        let y = lm.y * FRAME_H;
+        if (TRACKED.has(i)) {
+          let f = this.filters.get(i);
+          if (!f) {
+            f = [new OneEuro(this.minCutoff, this.beta), new OneEuro(this.minCutoff, this.beta)];
+            this.filters.set(i, f);
+          }
+          x = f[0].filter(x, t);
+          y = f[1].filter(y, t);
+        }
+        pts[i] = { x, y, v: lm.visibility == null ? 1 : lm.visibility };
+      }
+      return pts;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Raw body measurements from smoothed points (virtual-frame units, y down).
+  function measure(pts) {
+    const ls = pts[LM.L_SHOULDER], rs = pts[LM.R_SHOULDER];
+    const lh = pts[LM.L_HIP], rh = pts[LM.R_HIP];
+    const lk = pts[LM.L_KNEE], rk = pts[LM.R_KNEE];
+    const la = pts[LM.L_ANKLE], ra = pts[LM.R_ANKLE];
+    const shoulderW = Math.max(1e-3, Math.hypot(ls.x - rs.x, ls.y - rs.y));
+    const hipY = (lh.y + rh.y) / 2;
+    // The planted foot is the lower one on screen; using it keeps high knees
+    // and butt kicks from reading as a squat.
+    const ankleLow = Math.max(la.y, ra.y);
+    const leg = ankleLow - hipY;
+    // > 0 when the right foot/knee is higher than the left.
+    const stepRaw = ((la.y - ra.y) + (lk.y - rk.y)) / 2;
+    const torso = Math.hypot((ls.x + rs.x) / 2 - (lh.x + rh.x) / 2, (ls.y + rs.y) / 2 - hipY);
+    return { shoulderW, hipY, ankleLow, leg, stepRaw, torso };
+  }
+
+  // Is the whole body usable? Returns one status the UI can explain.
+  function assessFraming(pts, aspect) {
+    if (!pts) return { status: 'none' };
+    const fw = FRAME_H * aspect;
+    const ok = (i) => {
+      const p = pts[i];
+      return !!p && p.v >= 0.5 && p.x > 2 && p.x < fw - 2 && p.y > 2 && p.y < FRAME_H - 2;
+    };
+    const all = (ids) => ids.every(ok);
+    if (!all([LM.L_SHOULDER, LM.R_SHOULDER]) || !all([LM.L_HIP, LM.R_HIP])) return { status: 'none' };
+    if (!all([LM.L_KNEE, LM.R_KNEE, LM.L_ANKLE, LM.R_ANKLE])) return { status: 'feet' };
+    if (!ok(LM.NOSE)) return { status: 'head' };
+    const height = Math.max(pts[LM.L_ANKLE].y, pts[LM.R_ANKLE].y) - pts[LM.NOSE].y;
+    if (height < FRAME_H * 0.3) return { status: 'far', height };
+    const m = measure(pts);
+    if (m.shoulderW < m.torso * 0.35) return { status: 'side', height };
+    return { status: 'ok', height };
+  }
+
+  // Squat depth: how much the hip-to-planted-ankle distance has shrunk,
+  // normalized by shoulder width so stepping closer or farther doesn't
+  // count. 0 = standing tall, ~1 = thighs parallel.
+  function squatDepth(m, base) {
+    const ratio = m.leg / m.shoulderW;
+    return (1 - ratio / base.ratio) / 0.5;
+  }
+
+  // Alternating-feet signal, in leg lengths. Feet moving together (squats,
+  // hops) cancel out; alternating feet swing it positive and negative.
+  function stepSignal(m, base) {
+    return m.stepRaw / (base.ratio * m.shoulderW);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Captures the standing baseline once the player holds still for `hold` s.
+  class Calibrator {
+    constructor(hold = 1.0) { this.hold = hold; this.reset(); }
+    reset() { this.samples = []; this.progress = 0; }
+    push(m, t) {
+      const s = { t, ratio: m.leg / m.shoulderW, hipY: m.hipY, shoulderW: m.shoulderW, leg: m.leg, stepRaw: m.stepRaw };
+      this.samples.push(s);
+      while (this.samples.length > 1 && t - this.samples[0].t > this.hold) this.samples.shift();
+      const ratios = this.samples.map((x) => x.ratio);
+      const hips = this.samples.map((x) => x.hipY);
+      // Loose enough for a jittery, distant camera; a half squat moves the
+      // hips about 4x more than this allows.
+      const hipRange = (Math.max(...hips) - Math.min(...hips)) / mean(this.samples.map((x) => x.leg));
+      const steady = sd(ratios) / mean(ratios) < 0.07 && hipRange < 0.12;
+      if (!steady) {
+        this.samples = [s];
+        this.progress = 0;
+        return null;
+      }
+      const span = t - this.samples[0].t;
+      this.progress = clamp(span / this.hold, 0, 1);
+      if (span >= this.hold * 0.97) {
+        const ratio = mean(ratios);
+        // Noise floor of each signal while standing still. The app keeps its
+        // thresholds above this so a jittery camera can't fake steps.
+        const steps = this.samples.map((x) => x.stepRaw / (ratio * x.shoulderW));
+        return {
+          ratio,
+          shoulderW: mean(this.samples.map((x) => x.shoulderW)),
+          leg: mean(this.samples.map((x) => x.leg)),
+          stepNoise: sd(steps),
+          depthNoise: (sd(ratios) / ratio) / 0.5,
+        };
+      }
+      return null;
+    }
+  }
+
+  // Thresholds actually used: the player's setting, raised above the noise
+  // floor measured during calibration.
+  function effectiveThresholds(base, stepT, squatDown) {
+    return {
+      step: Math.max(stepT, base ? 3.2 * base.stepNoise : 0),
+      squat: Math.max(squatDown, base ? 3.5 * base.depthNoise : 0),
+    };
+  }
+
+  // Counts a step each time the raised foot switches sides.
+  class StepDetector {
+    constructor({ threshold = 0.045, minInterval = 0.15, idleReset = 1.0 } = {}) {
+      this.threshold = threshold;
+      this.minInterval = minInterval;
+      this.idleReset = idleReset;
+      this.reset();
+    }
+    reset() { this.lastSide = null; this.lastT = -Infinity; this.needNeutral = true; }
+    update(s, t) {
+      const T = this.threshold;
+      if (this.lastSide !== null && t - this.lastT > this.idleReset) {
+        // After a pause, wait for both feet down before counting again, so
+        // standing on one leg doesn't produce phantom steps.
+        this.lastSide = null;
+        this.needNeutral = true;
+      }
+      if (this.needNeutral) {
+        if (Math.abs(s) < T * 0.5) this.needNeutral = false;
+        else return null;
+      }
+      const side = s >= T ? 'R' : s <= -T ? 'L' : null;
+      if (side && side !== this.lastSide && t - this.lastT >= this.minInterval) {
+        this.lastSide = side;
+        this.lastT = t;
+        return side;
+      }
+      return null;
+    }
+  }
+
+  // Steps per minute from recent step times, easing to 0 when steps stop.
+  class CadenceMeter {
+    constructor({ window = 3.0, maxSteps = 6, idle = 1.25 } = {}) {
+      this.window = window;
+      this.maxSteps = maxSteps;
+      this.idle = idle;
+      this.times = [];
+    }
+    reset() { this.times = []; }
+    step(t) {
+      this.times.push(t);
+      if (this.times.length > this.maxSteps) this.times.shift();
+    }
+    value(t) {
+      const ts = this.times.filter((x) => t - x <= this.window);
+      if (ts.length < 2) return 0;
+      const last = ts[ts.length - 1];
+      const gap = t - last;
+      if (gap > this.idle) return 0;
+      const interval = (last - ts[0]) / (ts.length - 1);
+      if (interval <= 0) return 0;
+      const spm = 60 / interval;
+      return gap > interval ? spm * (interval / gap) : spm;
+    }
+  }
+
+  // Squat state machine with hysteresis: 'down' when depth passes `down`
+  // for `minHold` s, 'up' when it drops below half of that.
+  class SquatDetector {
+    constructor({ down = 0.4, minHold = 0.08, refractory = 0.25 } = {}) {
+      this.minHold = minHold;
+      this.refractory = refractory;
+      this.setDown(down);
+      this.reset();
+    }
+    setDown(v) { this.down = v; this.up = v * 0.5; }
+    reset() { this.state = 'up'; this.pendingT = null; this.maxDepth = 0; this.downT = 0; this.lastUpT = -Infinity; }
+    update(d, t) {
+      if (this.state === 'up') {
+        if (d >= this.down && t - this.lastUpT >= this.refractory) {
+          if (this.pendingT === null) this.pendingT = t;
+          if (t - this.pendingT >= this.minHold) {
+            this.state = 'down';
+            this.downT = t;
+            this.maxDepth = d;
+            this.pendingT = null;
+            return { type: 'down', depth: d };
+          }
+        } else {
+          this.pendingT = null;
+        }
+        return null;
+      }
+      this.maxDepth = Math.max(this.maxDepth, d);
+      if (d <= this.up) {
+        this.state = 'up';
+        this.lastUpT = t;
+        return { type: 'up', maxDepth: this.maxDepth, duration: t - this.downT };
+      }
+      return null;
+    }
+  }
+
+  // Both hands raised above the head for `hold` s. Fires once per raise.
+  class HandsUpDetector {
+    constructor({ hold = 0.5 } = {}) { this.hold = hold; this.reset(); }
+    reset() { this.since = null; this.fired = false; }
+    update(pts, t) {
+      const nose = pts && pts[LM.NOSE];
+      const raised = (wi, ei) => {
+        const w = pts[wi], e = pts[ei];
+        return (w && w.v >= 0.4 && w.y < nose.y) || (e && e.v >= 0.4 && e.y < nose.y);
+      };
+      const up = !!nose && nose.v >= 0.4 && raised(LM.L_WRIST, LM.L_ELBOW) && raised(LM.R_WRIST, LM.R_ELBOW);
+      if (!up) { this.since = null; this.fired = false; return false; }
+      if (this.since === null) this.since = t;
+      if (!this.fired && t - this.since >= this.hold) { this.fired = true; return true; }
+      return false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Race simulation. Distances in meters, times in seconds.
+  // Hurdle spacing is the real 400 m hurdles layout: first hurdle at 45 m,
+  // then every 35 m, 40 m run-in. Men's hurdle height is 0.914 m.
+  const RACES = {
+    400: { distance: 400, label: '400 m hurdles', hurdles: [45, 80, 115, 150, 185, 220, 255, 290, 325, 360] },
+    200: { distance: 200, label: '200 m hurdles', hurdles: [45, 80, 115, 150, 185] },
+  };
+
+  const PHYS = {
+    stride: 1.9,        // meters per step at running cadence
+    vMax: 9.5,
+    firstStepV: 2.2,    // a single step still nudges you forward
+    tauUp: 0.35, tauDown: 0.9, tauSquat: 2.4, tauAir: 6.0,
+    g: 8.5,
+    hMin: 1.0, hMax: 1.8,           // jump apex (foot clearance), shallow to deep squat
+    hurdleH: 0.914, clearH: 0.72,   // forgiving: feet above 0.72 m clear the bar
+    starH: 1.35,                    // feet this high over a hurdle collect its star
+    assistTime: 0.42,               // still squatting this many seconds from a hurdle: jump for you
+    stumbleSlow: 0.35, stumbleTime: 0.6,
+  };
+
+  class Race {
+    constructor(distance = 400, opts = {}) {
+      const cfg = RACES[distance] || RACES[400];
+      this.p = Object.assign({}, PHYS, opts.phys || {});
+      this.squatDown = opts.squatDown == null ? 0.4 : opts.squatDown;
+      this.distance = cfg.distance;
+      this.label = cfg.label;
+      this.hurdles = cfg.hurdles.map((x) => ({ x, state: 'up', fall: 0, starTaken: false }));
+      this.x = -0.8; // set up behind the start line
+      this.v = 0; this.y = 0; this.vy = 0;
+      this.time = 0;
+      this.finished = false;
+      this.finishTime = null;
+      this.charging = false;
+      this.chargeMax = 0;
+      this.consumed = false;
+      this.stumble = 0;
+      this.stats = { steps: 0, squats: 0, cleared: 0, clipped: 0, stars: 0, topSpeed: 0 };
+    }
+    get airborne() { return this.y > 0 || this.vy > 0; }
+    nextHurdle() {
+      for (const h of this.hurdles) if (h.state === 'up' && h.x >= this.x) return h;
+      return null;
+    }
+    power(maxDepth) { return clamp((maxDepth - this.squatDown) / (1 - this.squatDown), 0, 1); }
+    jump(power, events) {
+      const h = this.p.hMin + (this.p.hMax - this.p.hMin) * clamp(power, 0, 1);
+      this.vy = Math.sqrt(2 * this.p.g * h);
+      this.y = 1e-4;
+      events.push({ type: 'jump', power });
+    }
+    // input: { steps, cadence, depth, squat: null | {type:'down'|'up', depth?, maxDepth?} }
+    update(dt, input) {
+      const p = this.p;
+      const inp = input || {};
+      const events = [];
+
+      for (const h of this.hurdles) if (h.state === 'hit' && h.fall < 1) h.fall = Math.min(1, h.fall + dt / 0.35);
+
+      if (!this.finished) {
+        this.time += dt;
+        if (inp.steps) this.stats.steps += inp.steps;
+        if (inp.squat) {
+          if (inp.squat.type === 'down') {
+            this.charging = true;
+            this.consumed = false;
+            this.chargeMax = inp.squat.depth || 0;
+            this.stats.squats++;
+            events.push({ type: 'charge' });
+          } else if (inp.squat.type === 'up') {
+            if (this.charging && !this.consumed && !this.airborne) {
+              this.jump(this.power(Math.max(this.chargeMax, inp.squat.maxDepth || 0)), events);
+            }
+            this.charging = false;
+          }
+        }
+        if (this.charging) this.chargeMax = Math.max(this.chargeMax, inp.depth || 0);
+
+        // Time-based so the jump peaks over the bar at any speed (a fixed
+        // distance launches too late when sprinting).
+        const nh = this.nextHurdle();
+        if (this.charging && !this.consumed && !this.airborne && nh && nh.x - this.x <= Math.max(0.35, this.v * p.assistTime)) {
+          this.consumed = true;
+          this.jump(this.power(this.chargeMax), events);
+          events.push({ type: 'assist' });
+        }
+      }
+
+      // Speed follows cadence while running on the ground; squatting and
+      // flying keep momentum but don't add to it.
+      let target;
+      let tau;
+      if (this.finished) {
+        target = 0; tau = 1.2;
+      } else if (this.airborne) {
+        target = 0; tau = p.tauAir;
+      } else if (this.charging) {
+        target = 0; tau = p.tauSquat;
+      } else {
+        target = inp.cadence > 0 ? Math.min(p.vMax, (inp.cadence / 60) * p.stride) : 0;
+        if (inp.steps > 0) target = Math.max(target, p.firstStepV);
+        tau = target > this.v ? p.tauUp : p.tauDown;
+      }
+      this.v += (target - this.v) * (1 - Math.exp(-dt / tau));
+      if (this.v < 0.01 && target === 0) this.v = 0;
+      if (this.stumble > 0) this.stumble = Math.max(0, this.stumble - dt);
+      this.stats.topSpeed = Math.max(this.stats.topSpeed, this.v);
+
+      const x0 = this.x;
+      this.x += this.v * dt;
+
+      if (this.airborne) {
+        this.vy -= p.g * dt;
+        this.y += this.vy * dt;
+        if (this.y <= 0) {
+          this.y = 0;
+          this.vy = 0;
+          events.push({ type: 'land' });
+        }
+      }
+
+      for (const h of this.hurdles) {
+        if (h.state !== 'up' || !(x0 < h.x && this.x >= h.x)) continue;
+        if (this.y >= p.clearH) {
+          h.state = 'cleared';
+          this.stats.cleared++;
+          events.push({ type: 'clear', hurdle: h });
+          if (this.y >= p.starH) {
+            h.starTaken = true;
+            this.stats.stars++;
+            events.push({ type: 'star', hurdle: h });
+          }
+        } else {
+          h.state = 'hit';
+          this.stats.clipped++;
+          this.v *= p.stumbleSlow;
+          this.stumble = p.stumbleTime;
+          events.push({ type: 'hit', hurdle: h });
+        }
+      }
+
+      if (!this.finished && this.x >= this.distance) {
+        this.finished = true;
+        const over = (this.x - this.distance) / Math.max(this.v, 0.1);
+        this.finishTime = Math.max(0, this.time - over);
+        events.push({ type: 'finish', time: this.finishTime });
+      }
+      return events;
+    }
+  }
+
+  function formatTime(sec) {
+    if (sec == null || !isFinite(sec)) return '0:00.0';
+    const s = Math.max(0, sec);
+    const m = Math.floor(s / 60);
+    const rest = s - m * 60;
+    const tenths = Math.floor(rest * 10) / 10;
+    return m + ':' + (tenths < 10 ? '0' : '') + tenths.toFixed(1);
+  }
+
+  root.LaneFour = {
+    LM, FRAME_H, RACES, PHYS, clamp, mix,
+    OneEuro, PoseSmoother, measure, assessFraming, squatDepth, stepSignal,
+    Calibrator, effectiveThresholds, StepDetector, CadenceMeter, SquatDetector, HandsUpDetector, Race, formatTime,
+  };
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
+/* Lane Four app: camera, MediaPipe, game loop, rendering, UI. */
+(function () {
+  'use strict';
+  const LF = window.LaneFour;
+  const { clamp, mix } = LF;
+  const $ = (id) => document.getElementById(id);
+
+  const MP_VERSION = '1.0.1';
+  const MP_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@' + MP_VERSION;
+  const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
+  const DEFAULTS = { stepT: 0.045, squatDown: 0.4 };
+  const reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+  // ---------------------------------------------------------------- settings
+  const store = {
+    get(k, d) {
+      try { const v = localStorage.getItem('lanefour.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; }
+    },
+    set(k, v) { try { localStorage.setItem('lanefour.' + k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } },
+  };
+  const settings = {
+    stepT: store.get('stepT', DEFAULTS.stepT),
+    squatDown: store.get('squatDown', DEFAULTS.squatDown),
+    distance: store.get('distance', 400),
+    sound: store.get('sound', true),
+  };
+
+  // --------------------------------------------------------------------- DOM
+  const el = {};
+  ['hud', 'hudEvent', 'distVal', 'progFill', 'progTicks', 'clock', 'btnSignals', 'btnSound', 'soundWave', 'btnFull',
+    'meters', 'footL', 'footR', 'cadVal', 'squatMeter', 'squatFill', 'squatNotch',
+    'pip', 'cam', 'skel', 'pipTag', 'banner', 'bannerMain', 'bannerSub', 'bannerBar',
+    'intro', 'introError', 'btnCamera', 'btnManual',
+    'results', 'resEvent', 'resTime', 'resBest', 'resHurdles', 'resStars', 'resSquats', 'resSteps', 'resCad', 'resTop', 'resHint', 'btnAgain', 'btnSetup',
+    'tune', 'tuneClose', 'sigStep', 'sigSquat', 'sigStepVal', 'sigSquatVal', 'stepT', 'stepTOut', 'squatT', 'squatTOut', 'readout', 'btnRecal', 'btnResetT',
+    'pads', 'padL', 'padR', 'padSquat', 'padStart'].forEach((id) => { el[id] = $(id); });
+
+  const css = getComputedStyle(document.documentElement);
+  const tok = (name, fallback) => (css.getPropertyValue(name) || '').trim() || fallback;
+  const COL = {
+    track: tok('--track', '#c4472d'),
+    lane: tok('--lane', '#f4f1e8'),
+    amber: tok('--amber', '#ffb22e'),
+    good: tok('--good', '#57d98f'),
+    bad: tok('--bad', '#ff6155'),
+    runner: '#fbf8ef',
+    runnerFar: '#c9c4b6',
+    hurdleMark: '#3fbf6a',
+  };
+  const FONT_DISPLAY = '"Big Shoulders Display", "Arial Narrow", sans-serif';
+  const FONT_LED = '"Doto", ui-monospace, Menlo, monospace';
+
+  // ------------------------------------------------------------------- sound
+  const Sound = (() => {
+    let ac = null;
+    let master = null;
+    let noiseBuf = null;
+    function ctx() {
+      if (ac) return ac;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      try {
+        ac = new AC();
+        master = ac.createGain();
+        master.gain.value = 0.55;
+        master.connect(ac.destination);
+        const len = Math.floor(ac.sampleRate * 0.6);
+        noiseBuf = ac.createBuffer(1, len, ac.sampleRate);
+        const d = noiseBuf.getChannelData(0);
+        for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+      } catch (e) { ac = null; }
+      return ac;
+    }
+    function unlock() {
+      const a = ctx();
+      if (a && a.state === 'suspended') a.resume().catch(() => {});
+    }
+    function tone(freq, dur, o = {}) {
+      if (!settings.sound) return;
+      const a = ctx();
+      if (!a) return;
+      const t0 = a.currentTime + (o.delay || 0);
+      const osc = a.createOscillator();
+      const gn = a.createGain();
+      osc.type = o.type || 'sine';
+      osc.frequency.setValueAtTime(freq, t0);
+      if (o.to) osc.frequency.exponentialRampToValueAtTime(o.to, t0 + dur);
+      gn.gain.setValueAtTime(0.0001, t0);
+      gn.gain.exponentialRampToValueAtTime(o.gain || 0.2, t0 + 0.01);
+      gn.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      osc.connect(gn);
+      gn.connect(master);
+      osc.start(t0);
+      osc.stop(t0 + dur + 0.05);
+    }
+    function noise(dur, o = {}) {
+      if (!settings.sound) return;
+      const a = ctx();
+      if (!a) return;
+      const t0 = a.currentTime + (o.delay || 0);
+      const src = a.createBufferSource();
+      src.buffer = noiseBuf;
+      const f = a.createBiquadFilter();
+      f.type = 'bandpass';
+      f.frequency.setValueAtTime(o.freq || 1200, t0);
+      f.Q.value = o.q || 0.8;
+      if (o.to) f.frequency.exponentialRampToValueAtTime(o.to, t0 + dur);
+      const gn = a.createGain();
+      gn.gain.setValueAtTime(o.gain || 0.3, t0);
+      gn.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      src.connect(f);
+      f.connect(gn);
+      gn.connect(master);
+      src.start(t0);
+      src.stop(t0 + dur + 0.05);
+    }
+    return {
+      unlock,
+      step: (side) => tone(side === 'L' ? 660 : 560, 0.045, { type: 'triangle', gain: 0.07 }),
+      charge: () => tone(180, 0.16, { gain: 0.18, to: 320 }),
+      jump: (p) => { tone(320, 0.28, { type: 'triangle', gain: 0.16, to: 700 + 600 * p }); noise(0.22, { gain: 0.06, freq: 900, to: 3200 }); },
+      clear: () => { tone(880, 0.12, { gain: 0.14 }); tone(1318, 0.2, { gain: 0.12, delay: 0.07 }); },
+      star: () => [1568, 2093, 2637].forEach((f, i) => tone(f, 0.14, { gain: 0.1, delay: i * 0.06 })),
+      hit: () => { tone(120, 0.32, { gain: 0.4, to: 50 }); noise(0.18, { gain: 0.25, freq: 500, q: 0.6 }); },
+      beep: () => tone(784, 0.16, { type: 'square', gain: 0.07 }),
+      gun: () => { noise(0.5, { gain: 0.7, freq: 2400, q: 0.4, to: 300 }); tone(90, 0.25, { gain: 0.3, to: 40 }); },
+      finish: () => [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.24, { type: 'triangle', gain: 0.14, delay: i * 0.12 })),
+    };
+  })();
+
+  // Spoken prompts matter here: the player is 2-3 m from a small screen.
+  let lastSaid = { text: '', t: 0 };
+  function say(text, force) {
+    if (!settings.sound || !('speechSynthesis' in window)) return;
+    const now = performance.now();
+    if (!force && (now - lastSaid.t < 3500 || (text === lastSaid.text && now - lastSaid.t < 8000))) return;
+    lastSaid = { text, t: now };
+    try {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 1.05;
+      u.lang = 'en-US';
+      window.speechSynthesis.speak(u);
+    } catch (e) { /* speech unavailable */ }
+  }
+
+  // ------------------------------------------------------------------- state
+  const S = {
+    mode: null, // 'camera' | 'manual'
+    phase: 'intro', // intro | setup | ready | countdown | running | paused | finished
+    race: null,
+    baseline: null,
+    eff: LF.effectiveThresholds(null, settings.stepT, settings.squatDown),
+    pts: null,
+    aspect: 4 / 3,
+    framing: 'none',
+    framingSince: 0,
+    depth: 0,
+    stepSig: 0,
+    cadence: 0,
+    pendingSteps: 0,
+    pendingSquat: null,
+    timers: [],
+    resultsTimer: null,
+    best: store.get('best', {}),
+    av: { phase: 0, target: 0, crouch: 0, air: 0, stumble: 0, gait: 0, charged: false },
+    particles: [],
+    popups: [],
+    poseFps: 0, poseFrames: 0, poseFpsT: 0, inferMs: 0, delegate: '',
+    sig: [],
+    marks: [],
+    manual: { held: false, depth: 0 },
+  };
+
+  const smoother = new LF.PoseSmoother();
+  const calibrator = new LF.Calibrator(1.0);
+  const stepDet = new LF.StepDetector({ threshold: settings.stepT });
+  const squatDet = new LF.SquatDetector({ down: settings.squatDown });
+  const handsUp = new LF.HandsUpDetector();
+  const cadence = new LF.CadenceMeter();
+
+  function applyThresholds() {
+    S.eff = LF.effectiveThresholds(S.mode === 'camera' ? S.baseline : null, settings.stepT, settings.squatDown);
+    stepDet.threshold = S.eff.step;
+    squatDet.setDown(S.eff.squat);
+    if (S.race) S.race.squatDown = S.eff.squat;
+    el.squatNotch.style.bottom = (clamp(S.eff.squat / 1.2, 0, 1) * 100).toFixed(1) + '%';
+  }
+
+  function newRace() {
+    S.race = new LF.Race(settings.distance, { squatDown: S.eff.squat });
+    S.particles = [];
+    S.popups = [];
+    S.pendingSteps = 0;
+    S.pendingSquat = null;
+    el.hudEvent.textContent = S.race.label + ' · Lane 4';
+    buildTicks();
+  }
+
+  // ------------------------------------------------------------------ banner
+  let bannerKey = null;
+  function banner(main, sub, opts) {
+    const o = opts || {};
+    const key = main + '|' + (sub || '') + '|' + (o.tone || '');
+    if (key === bannerKey) return;
+    bannerKey = key;
+    el.bannerMain.textContent = main;
+    el.bannerSub.textContent = sub || '';
+    el.banner.className = o.tone || '';
+    if (o.pop && !reduceMotion) {
+      el.bannerMain.classList.remove('banner-pop');
+      void el.bannerMain.offsetWidth;
+      el.bannerMain.classList.add('banner-pop');
+    }
+  }
+  function bannerProgress(v) {
+    if (v == null) { el.bannerBar.hidden = true; return; }
+    el.bannerBar.hidden = false;
+    el.bannerBar.firstElementChild.style.transform = 'scaleX(' + clamp(v, 0, 1).toFixed(3) + ')';
+  }
+  function clearBanner() { banner('', ''); bannerProgress(null); }
+
+  const FRAMING = {
+    none: ['Step into view', 'Stand 2 to 3 m from the camera, facing it.', 'Step into view'],
+    feet: ['Step back', "I can't see your feet yet.", 'Step back so I can see your feet'],
+    head: ['Step back', 'Get your head in the picture too.', 'Step back so your head is in the picture'],
+    far: ['Come a little closer', "You're small in the picture, so tracking gets shaky.", 'Come a little closer'],
+    side: ['Face the camera', 'Turn your shoulders square to the screen.', 'Face the camera'],
+  };
+
+  // ------------------------------------------------------------------ phases
+  function setPhase(p) {
+    S.phase = p;
+    document.body.dataset.phase = p;
+  }
+  function clearTimers() {
+    S.timers.forEach(clearTimeout);
+    S.timers = [];
+    clearTimeout(S.resultsTimer);
+  }
+  function blurActive() {
+    if (document.activeElement && document.activeElement !== document.body && document.activeElement.blur) document.activeElement.blur();
+  }
+
+  function showIntro(errorMsg) {
+    clearTimers();
+    setPhase('intro');
+    el.intro.hidden = false;
+    el.results.hidden = true;
+    el.hud.hidden = true;
+    el.meters.hidden = true;
+    el.pads.hidden = true;
+    el.pip.hidden = true;
+    el.padStart.hidden = true;
+    clearBanner();
+    el.btnCamera.disabled = false;
+    el.btnManual.disabled = false;
+    el.introError.hidden = !errorMsg;
+    el.introError.textContent = errorMsg || '';
+    newRace();
+  }
+
+  function showPlayUi() {
+    el.intro.hidden = true;
+    el.results.hidden = true;
+    el.hud.hidden = false;
+    el.meters.hidden = false;
+    el.pip.hidden = S.mode !== 'camera';
+    el.pads.hidden = S.mode !== 'manual';
+    document.body.classList.toggle('manual', S.mode === 'manual');
+  }
+
+  function resetDetectors() {
+    smoother.reset();
+    calibrator.reset();
+    stepDet.reset();
+    squatDet.reset();
+    handsUp.reset();
+    cadence.reset();
+    S.depth = 0;
+    S.stepSig = 0;
+    S.sig = [];
+    S.marks = [];
+  }
+
+  function enterSetup() {
+    clearTimers();
+    setPhase('setup');
+    S.baseline = null;
+    resetDetectors();
+    applyThresholds();
+    newRace();
+    showPlayUi();
+    keepAwake();
+    bannerKey = null;
+  }
+
+  function enterReady() {
+    setPhase('ready');
+    handsUp.reset();
+    bannerProgress(null);
+    if (S.mode === 'camera') {
+      banner('Raise both hands', 'to start the race', { tone: 'amber', pop: true });
+      say('Raise both hands to start', true);
+    } else {
+      banner('Ready', 'Press Enter or tap Start race.', { tone: 'amber', pop: true });
+      el.padStart.hidden = false;
+    }
+  }
+
+  function startCountdown() {
+    if (S.phase !== 'ready') return;
+    Sound.unlock();
+    clearTimers();
+    el.padStart.hidden = true;
+    el.results.hidden = true;
+    setPhase('countdown');
+    banner('On your marks', '', { tone: 'amber', pop: true });
+    Sound.beep();
+    say('On your marks', true);
+    S.timers.push(setTimeout(() => {
+      banner('Set', '', { tone: 'amber', pop: true });
+      Sound.beep();
+      say('Set', true);
+    }, 1700));
+    // Like a real starter, the hold after "Set" varies a little.
+    S.timers.push(setTimeout(go, 1700 + 1100 + Math.random() * 600));
+  }
+
+  function go() {
+    setPhase('running');
+    cadence.reset();
+    S.pendingSteps = 0;
+    S.pendingSquat = null;
+    banner('Go', '', { tone: 'amber', pop: true });
+    Sound.gun();
+    S.timers.push(setTimeout(() => { if (S.phase === 'running') clearBanner(); }, 800));
+  }
+
+  function pauseRace(reason) {
+    if (S.phase !== 'running') return;
+    setPhase('paused');
+    S.pausedReason = reason;
+    if (reason === 'hidden') banner('Paused', 'Come back to this tab to continue.', { tone: 'bad' });
+  }
+
+  function resumeRace() {
+    if (S.phase !== 'paused') return;
+    setPhase('running');
+    banner('Go', '', { tone: 'amber', pop: true });
+    S.timers.push(setTimeout(() => { if (S.phase === 'running') clearBanner(); }, 700));
+  }
+
+  function spokenTime(sec) {
+    const m = Math.floor(sec / 60);
+    const s = (sec - m * 60).toFixed(1);
+    return (m ? m + (m === 1 ? ' minute ' : ' minutes ') : '') + s + ' seconds';
+  }
+
+  function onFinish(time) {
+    setPhase('finished');
+    Sound.finish();
+    const d = S.race.distance;
+    const prev = S.best[d];
+    const isBest = prev == null || time < prev;
+    if (isBest) {
+      S.best[d] = time;
+      store.set('best', S.best);
+    }
+    banner(LF.formatTime(time), isBest && prev != null ? 'New best' : 'Finished', { tone: 'amber', pop: true });
+    say('Finished in ' + spokenTime(time), true);
+    S.resultsTimer = setTimeout(() => showResults(time, isBest, prev), 1800);
+  }
+
+  function showResults(time, isBest, prev) {
+    clearBanner();
+    const r = S.race;
+    const st = r.stats;
+    el.resEvent.textContent = r.label;
+    el.resTime.textContent = LF.formatTime(time);
+    el.resBest.textContent = isBest ? (prev == null ? 'First run' : 'New best') : 'Best ' + LF.formatTime(prev);
+    el.resHurdles.textContent = st.cleared + ' / ' + r.hurdles.length;
+    el.resStars.textContent = String(st.stars);
+    el.resSquats.textContent = String(st.squats);
+    el.resSteps.textContent = String(st.steps);
+    setStat(el.resCad, String(time > 0 ? Math.round(st.steps / (time / 60)) : 0), 'spm');
+    setStat(el.resTop, (st.topSpeed * 3.6).toFixed(1), 'km/h');
+    el.resHint.textContent = S.mode === 'camera' ? 'Raise both hands to race again.' : 'Press Enter or tap Race again.';
+    el.pads.hidden = true;
+    el.results.hidden = false;
+    handsUp.reset();
+  }
+
+  function setStat(node, value, unit) {
+    node.textContent = value;
+    const u = document.createElement('small');
+    u.textContent = ' ' + unit;
+    node.appendChild(u);
+  }
+
+  function raceAgain() {
+    if (S.phase !== 'finished') return;
+    clearTimers();
+    newRace();
+    el.results.hidden = true;
+    el.pads.hidden = S.mode !== 'manual';
+    setPhase('ready');
+    startCountdown();
+  }
+
+  // ------------------------------------------------------- camera + tracking
+  let stream = null;
+  let landmarker = null;
+  let fileset = null;
+  let recreating = false;
+  let lastVideoTime = -1;
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      if (window.Vision) { resolve(); return; }
+      const s = document.createElement('script');
+      s.src = src;
+      s.crossOrigin = 'anonymous';
+      s.onload = () => resolve();
+      s.onerror = () => reject(Object.assign(new Error('Could not load ' + src), { code: 'model' }));
+      document.head.appendChild(s);
+    });
+  }
+
+  function landmarkerOptions(delegate) {
+    return {
+      baseOptions: { modelAssetPath: MODEL_URL, delegate },
+      runningMode: 'VIDEO',
+      numPoses: 1,
+      minPoseDetectionConfidence: 0.5,
+      minPosePresenceConfidence: 0.5,
+      minTrackingConfidence: 0.5,
+    };
+  }
+
+  async function createLandmarker() {
+    try {
+      await loadScript(MP_BASE + '/vision_bundle.js');
+      const { FilesetResolver, PoseLandmarker } = window.Vision;
+      fileset = fileset || await FilesetResolver.forVisionTasks(MP_BASE + '/wasm');
+      try {
+        const lm = await PoseLandmarker.createFromOptions(fileset, landmarkerOptions('GPU'));
+        S.delegate = 'GPU';
+        return lm;
+      } catch (gpuErr) {
+        console.warn('GPU delegate unavailable, using CPU', gpuErr);
+        const lm = await PoseLandmarker.createFromOptions(fileset, landmarkerOptions('CPU'));
+        S.delegate = 'CPU';
+        return lm;
+      }
+    } catch (err) {
+      if (!err.code) err.code = 'model';
+      throw err;
+    }
+  }
+
+  function waitForVideo(video) {
+    return new Promise((resolve, reject) => {
+      if (video.videoWidth > 0) { resolve(); return; }
+      const done = () => { clearTimeout(timer); video.removeEventListener('loadedmetadata', done); resolve(); };
+      const timer = setTimeout(() => reject(Object.assign(new Error('Camera gave no picture'), { name: 'NotReadableError' })), 8000);
+      video.addEventListener('loadedmetadata', done);
+    });
+  }
+
+  function updateAspect() {
+    const vw = el.cam.videoWidth || 640;
+    const vh = el.cam.videoHeight || 480;
+    S.aspect = vw / vh;
+    el.pip.style.aspectRatio = vw + ' / ' + vh;
+    el.skel.width = Math.round(LF.FRAME_H * S.aspect);
+    el.skel.height = LF.FRAME_H;
+  }
+
+  function stopCamera() {
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    stream = null;
+    el.cam.srcObject = null;
+  }
+
+  function cameraErrorMessage(err) {
+    const name = err && (err.code || err.name);
+    if (name === 'insecure') {
+      return 'The camera only works on a secure page. On a computer, open this file in Chrome. On a phone, open it from an https:// address (GitHub Pages works).';
+    }
+    if (name === 'NotAllowedError' || name === 'SecurityError') return 'Camera access is blocked. Allow the camera for this page in your browser settings, then try again.';
+    if (name === 'NotFoundError' || name === 'OverconstrainedError') return 'No camera found on this device. You can still play with keys or touch.';
+    if (name === 'NotReadableError') return 'The camera is busy or gave no picture. Close other apps using it and try again.';
+    if (name === 'model') return "Couldn't load the body tracking model. Check your internet connection and try again.";
+    return 'The camera could not start (' + ((err && err.message) || 'unknown error') + ').';
+  }
+
+  async function startCamera() {
+    Sound.unlock();
+    el.introError.hidden = true;
+    el.btnCamera.disabled = true;
+    el.btnManual.disabled = true;
+    try {
+      if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw Object.assign(new Error('insecure context'), { code: 'insecure' });
+      }
+      el.btnCamera.textContent = 'Starting camera…';
+      if (!stream) {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
+        });
+        el.cam.srcObject = stream;
+      }
+      await el.cam.play().catch(() => {});
+      await waitForVideo(el.cam);
+      updateAspect();
+      if (!landmarker) {
+        el.btnCamera.textContent = 'Loading body tracking…';
+        landmarker = await createLandmarker();
+      }
+      S.mode = 'camera';
+      blurActive();
+      enterSetup();
+    } catch (err) {
+      console.warn(err);
+      if (!landmarker) stopCamera();
+      showIntro(cameraErrorMessage(err));
+    } finally {
+      el.btnCamera.textContent = 'Start with camera';
+    }
+  }
+
+  async function recoverOnCpu() {
+    if (recreating) return;
+    recreating = true;
+    const old = landmarker;
+    landmarker = null;
+    try { if (old) old.close(); } catch (e) { /* ignore */ }
+    try {
+      landmarker = await window.Vision.PoseLandmarker.createFromOptions(fileset, landmarkerOptions('CPU'));
+      S.delegate = 'CPU';
+    } catch (err) {
+      console.warn(err);
+      showIntro(cameraErrorMessage({ code: 'model' }));
+    }
+    recreating = false;
+  }
+
+  function detectPose(nowMs) {
+    if (S.mode !== 'camera' || !landmarker || S.phase === 'intro' || el.cam.readyState < 2) return;
+    if (el.cam.currentTime === lastVideoTime) return;
+    lastVideoTime = el.cam.currentTime;
+    const t0 = performance.now();
+    let res;
+    try {
+      res = landmarker.detectForVideo(el.cam, nowMs);
+    } catch (err) {
+      console.warn('Pose detection failed', err);
+      recoverOnCpu();
+      return;
+    }
+    const ms = performance.now() - t0;
+    S.inferMs = S.inferMs ? S.inferMs * 0.9 + ms * 0.1 : ms;
+    S.poseFrames++;
+    onPose(res, nowMs / 1000);
+  }
+
+  function setFraming(status, t) {
+    if (status !== S.framing) {
+      S.framing = status;
+      S.framingSince = t;
+    }
+  }
+
+  function onPose(res, t) {
+    const lm = res && res.landmarks && res.landmarks[0];
+    if (!lm) {
+      S.pts = null;
+      setFraming('none', t);
+      if (S.phase === 'setup') calibrator.reset();
+      drawSkeleton();
+      return;
+    }
+    S.pts = smoother.apply(lm, S.aspect, t);
+    setFraming(LF.assessFraming(S.pts, S.aspect).status, t);
+    drawSkeleton();
+
+    if (S.framing === 'ok') {
+      const m = LF.measure(S.pts);
+      if (!S.baseline) {
+        if (S.phase === 'setup') {
+          const b = calibrator.push(m, t);
+          if (b) {
+            S.baseline = b;
+            applyThresholds();
+            enterReady();
+          }
+        }
+      } else {
+        S.stepSig = LF.stepSignal(m, S.baseline);
+        S.depth = LF.squatDepth(m, S.baseline);
+        const side = stepDet.update(S.stepSig, t);
+        if (side) onStep(side, t);
+        const sq = squatDet.update(S.depth, t);
+        if (sq) onSquat(sq, t);
+        recordSignals(t);
+      }
+    } else if (S.phase === 'setup') {
+      calibrator.reset();
+    }
+    if (handsUp.update(S.pts, t)) onHandsUp();
+  }
+
+  function onStep(side, t) {
+    cadence.step(t);
+    S.av.target += 0.5;
+    flashFoot(side);
+    S.marks.push({ t, type: side });
+    if (S.phase === 'running') {
+      S.pendingSteps++;
+      Sound.step(side);
+      spawnDust();
+    }
+  }
+
+  function onSquat(sq, t) {
+    S.marks.push({ t, type: sq.type });
+    if (S.phase === 'running') {
+      S.pendingSquat = sq;
+      if (sq.type === 'down') Sound.charge();
+    }
+  }
+
+  function onHandsUp() {
+    if (S.phase === 'ready') startCountdown();
+    else if (S.phase === 'finished' && !el.results.hidden) raceAgain();
+  }
+
+  // Prompts for camera mode, re-evaluated every frame.
+  function updatePrompts(t) {
+    if (S.mode !== 'camera') return;
+    const f = S.framing;
+    const held = t - S.framingSince;
+    if (S.phase === 'setup') {
+      if (f !== 'ok') {
+        if (held > 0.5 || bannerKey === null) {
+          const m = FRAMING[f];
+          banner(m[0], m[1], { tone: 'bad' });
+          bannerProgress(null);
+          if (held > 1.5) say(m[2]);
+        }
+      } else {
+        banner('Stand tall and still', 'Measuring your standing height for a second.', { tone: 'amber' });
+        bannerProgress(calibrator.progress);
+      }
+    } else if (S.phase === 'ready') {
+      if (f !== 'ok' && held > 0.6) {
+        const m = FRAMING[f];
+        banner(m[0], m[1], { tone: 'bad' });
+      } else if (f === 'ok') {
+        banner('Raise both hands', 'to start the race', { tone: 'amber' });
+      }
+    } else if (S.phase === 'running') {
+      if (f !== 'ok' && held > 1.2) pauseRace(f);
+    } else if (S.phase === 'paused' && S.pausedReason !== 'hidden') {
+      if (f !== 'ok') {
+        const m = FRAMING[f];
+        banner(m[0], m[1] + ' The race is paused.', { tone: 'bad' });
+        if (held > 1.5) say(m[2]);
+      } else if (held > 0.6) {
+        resumeRace();
+      }
+    }
+  }
+
+  // ------------------------------------------------------- keys/touch input
+  function startManual() {
+    Sound.unlock();
+    stopCamera();
+    S.mode = 'manual';
+    clearTimers();
+    resetDetectors();
+    S.baseline = null;
+    S.manual.held = false;
+    S.manual.depth = 0;
+    applyThresholds();
+    newRace();
+    showPlayUi();
+    blurActive();
+    keepAwake();
+    enterReady();
+  }
+
+  function manualStep(side) {
+    if (S.mode !== 'manual' || S.phase === 'intro') return;
+    Sound.unlock();
+    S.stepSig = side === 'R' ? 0.15 : -0.15;
+    onStep(side, performance.now() / 1000);
+  }
+
+  function manualSquat(held) {
+    if (S.mode !== 'manual') return;
+    S.manual.held = held;
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (e.target && e.target.tagName === 'INPUT') return;
+    const k = e.key;
+    if ((k === 'd' || k === 'D') && !e.metaKey && !e.ctrlKey) { toggleTune(); return; }
+    if (S.phase === 'intro') return;
+    if (k === 'Enter') {
+      e.preventDefault();
+      if (S.phase === 'ready') startCountdown();
+      else if (S.phase === 'finished' && !el.results.hidden) raceAgain();
+      return;
+    }
+    if (S.mode !== 'manual') return;
+    if (k === ' ' || k === 'ArrowDown') {
+      e.preventDefault();
+      if (e.repeat) return;
+      if (S.phase === 'ready') startCountdown();
+      else manualSquat(true);
+      return;
+    }
+    if (e.repeat) return;
+    if (k === 'ArrowLeft' || k === 'f' || k === 'F') { e.preventDefault(); manualStep('L'); }
+    else if (k === 'ArrowRight' || k === 'j' || k === 'J') { e.preventDefault(); manualStep('R'); }
+  });
+  window.addEventListener('keyup', (e) => {
+    if (S.mode === 'manual' && (e.key === ' ' || e.key === 'ArrowDown')) manualSquat(false);
+  });
+
+  function bindPad(btn, down, up) {
+    btn.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      try { btn.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+      btn.classList.add('active');
+      down();
+    });
+    const end = () => {
+      if (!btn.classList.contains('active')) return;
+      btn.classList.remove('active');
+      if (up) up();
+    };
+    btn.addEventListener('pointerup', end);
+    btn.addEventListener('pointercancel', end);
+    btn.addEventListener('lostpointercapture', end);
+    btn.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+  bindPad(el.padL, () => manualStep('L'));
+  bindPad(el.padR, () => manualStep('R'));
+  bindPad(el.padSquat, () => manualSquat(true), () => manualSquat(false));
+  el.padStart.addEventListener('click', () => startCountdown());
+
+  // -------------------------------------------------------------- game loop
+  function update(dt, t) {
+    if (S.mode === 'manual') {
+      const m = S.manual;
+      m.depth = m.held ? Math.min(1.05, m.depth + dt * 2.2) : Math.max(0, m.depth - dt * 6);
+      S.depth = m.depth;
+      const sq = squatDet.update(S.depth, t);
+      if (sq) onSquat(sq, t);
+      S.stepSig *= Math.exp(-dt / 0.12);
+      if (S.phase !== 'intro') recordSignals(t);
+    } else if (S.framing !== 'ok') {
+      S.depth *= Math.exp(-dt / 0.3);
+    }
+    S.cadence = cadence.value(t);
+
+    const r = S.race;
+    if (S.phase === 'running' || S.phase === 'finished') {
+      const running = S.phase === 'running';
+      const events = r.update(dt, {
+        steps: running ? S.pendingSteps : 0,
+        cadence: running ? S.cadence : 0,
+        depth: S.depth,
+        squat: running ? S.pendingSquat : null,
+      });
+      for (const e of events) handleRaceEvent(e);
+    }
+    S.pendingSteps = 0;
+    S.pendingSquat = null;
+
+    updateAvatar(dt, t);
+    updateParticles(dt);
+    updatePrompts(t);
+    updateHud();
+  }
+
+  function handleRaceEvent(e) {
+    switch (e.type) {
+      case 'jump': Sound.jump(e.power); break;
+      case 'clear':
+        Sound.clear();
+        popup('Clear', e.hurdle.x + 0.4, 2.0, COL.good);
+        burst(e.hurdle.x, 1.0, COL.amber, 8);
+        updateTicks();
+        break;
+      case 'star':
+        Sound.star();
+        popup('Star', e.hurdle.x + 0.4, 2.8, COL.amber);
+        burst(e.hurdle.x, 2.45, COL.amber, 18);
+        updateTicks();
+        break;
+      case 'hit':
+        Sound.hit();
+        popup('Clipped', e.hurdle.x + 0.4, 2.0, COL.bad);
+        updateTicks();
+        break;
+      case 'finish': onFinish(e.time); break;
+      default: break;
+    }
+  }
+
+  function updateAvatar(dt, t) {
+    const a = S.av;
+    const r = S.race;
+    a.phase += (a.target - a.phase) * (1 - Math.exp(-dt / 0.11));
+    const g = Math.max(r.v / 7.5, S.phase === 'running' ? 0 : S.cadence / 220);
+    a.gait += (clamp(g, 0, 1) - a.gait) * (1 - Math.exp(-dt / 0.25));
+    const crouchTarget = r.airborne ? 0 : clamp(S.depth, 0, 1.1) / 1.1;
+    a.crouch += (crouchTarget - a.crouch) * (1 - Math.exp(-dt / 0.06));
+    a.air += ((r.airborne ? 1 : 0) - a.air) * (1 - Math.exp(-dt / 0.07));
+    a.stumble += ((r.stumble > 0 ? 1 : 0) - a.stumble) * (1 - Math.exp(-dt / 0.1));
+    a.charged = squatDet.state === 'down';
+    a.t = t;
+  }
+
+  // -------------------------------------------------------------------- HUD
+  const hudCache = {};
+  function setText(node, key, val) {
+    if (hudCache[key] !== val) { hudCache[key] = val; node.textContent = val; }
+  }
+  function updateHud() {
+    const r = S.race;
+    setText(el.distVal, 'dist', String(clamp(Math.floor(r.x), 0, r.distance)));
+    setText(el.clock, 'clock', LF.formatTime(r.finished ? r.finishTime : r.time));
+    const prog = clamp(r.x / r.distance, 0, 1).toFixed(4);
+    if (hudCache.prog !== prog) { hudCache.prog = prog; el.progFill.style.transform = 'scaleX(' + prog + ')'; }
+    setText(el.cadVal, 'cad', String(Math.round(S.cadence)));
+    const d = clamp(S.depth / 1.2, 0, 1).toFixed(3);
+    if (hudCache.depth !== d) { hudCache.depth = d; el.squatFill.style.transform = 'scaleY(' + d + ')'; }
+    const charged = squatDet.state === 'down';
+    if (hudCache.charged !== charged) { hudCache.charged = charged; el.squatMeter.classList.toggle('charged', charged); }
+    if (S.mode === 'camera') {
+      const cls = S.framing === 'ok' ? 'good' : 'bad';
+      if (hudCache.pip !== cls) { hudCache.pip = cls; el.pip.className = cls; }
+    }
+  }
+
+  function buildTicks() {
+    el.progTicks.textContent = '';
+    for (const h of S.race.hurdles) {
+      const tick = document.createElement('span');
+      tick.className = 'tick';
+      tick.style.left = (h.x / S.race.distance * 100).toFixed(2) + '%';
+      el.progTicks.appendChild(tick);
+    }
+  }
+  function updateTicks() {
+    const ticks = el.progTicks.children;
+    S.race.hurdles.forEach((h, i) => {
+      const tick = ticks[i];
+      if (!tick) return;
+      tick.className = 'tick' + (h.state === 'cleared' ? ' cleared' : h.state === 'hit' ? ' hit' : '');
+      if (h.starTaken && !tick.firstChild) {
+        const star = document.createElement('i');
+        star.className = 'star';
+        tick.appendChild(star);
+      }
+    });
+  }
+
+  const footTimers = {};
+  function flashFoot(side) {
+    const node = side === 'L' ? el.footL : el.footR;
+    node.classList.add('on');
+    clearTimeout(footTimers[side]);
+    footTimers[side] = setTimeout(() => node.classList.remove('on'), 140);
+  }
+
+  // ----------------------------------------------------------- world render
+  const cv = $('world');
+  const g = cv.getContext('2d');
+  const V = {};
+
+  function seeded(seed) {
+    let s = seed >>> 0;
+    return () => {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      return s / 4294967296;
+    };
+  }
+
+  function resize() {
+    V.dpr = Math.min(2, window.devicePixelRatio || 1);
+    V.W = Math.max(1, window.innerWidth);
+    V.H = Math.max(1, window.innerHeight);
+    cv.width = Math.round(V.W * V.dpr);
+    cv.height = Math.round(V.H * V.dpr);
+    const land = V.W >= V.H * 1.05;
+    V.ground = Math.round(V.H * (land ? 0.72 : 0.62));
+    V.ppm = clamp(Math.min((V.H * 0.21) / 1.8, V.W * (land ? 0.07 : 0.094)), 16, 140);
+    V.rx = V.W * (land ? 0.3 : 0.22);
+    V.laneH = V.ppm * 0.55; // lane width (1.22 m) seen at a shallow angle
+    V.kz = V.laneH / 1.22; // screen px per meter across the track
+    V.obl = V.ppm * 0.38; // oblique shift per meter across the track
+    V.edges = [];
+    for (let k = 0; k <= 8; k++) V.edges.push(V.ground + (k - 3.5) * V.laneH);
+    V.trackTop = V.edges[0];
+    V.grassTop = V.trackTop - Math.max(18, V.ppm * 1.1);
+    V.standsTop = V.grassTop - Math.max(60, V.H * 0.16);
+    buildSky();
+    buildStands();
+    buildGrain();
+    sizeSigCanvases();
+  }
+
+  function buildSky() {
+    const c = V.sky || (V.sky = document.createElement('canvas'));
+    c.width = cv.width;
+    c.height = Math.ceil((V.grassTop + 4) * V.dpr);
+    const x = c.getContext('2d');
+    x.setTransform(V.dpr, 0, 0, V.dpr, 0, 0);
+    const grd = x.createLinearGradient(0, 0, 0, V.grassTop);
+    grd.addColorStop(0, '#050b20');
+    grd.addColorStop(0.6, '#13244c');
+    grd.addColorStop(1, '#2e4b86');
+    x.fillStyle = grd;
+    x.fillRect(0, 0, V.W, V.grassTop + 4);
+    const rnd = seeded(11);
+    const n = Math.round((V.W * V.standsTop) / 5000);
+    for (let i = 0; i < n; i++) {
+      const big = rnd() < 0.12;
+      x.fillStyle = 'rgba(232, 238, 255, ' + (0.2 + rnd() * 0.55).toFixed(2) + ')';
+      x.fillRect(rnd() * V.W, rnd() * V.standsTop * 0.85, big ? 2 : 1, big ? 2 : 1);
+    }
+  }
+
+  // A seamless tile of far-side grandstand, crowd and perimeter boards.
+  function buildStands() {
+    const tw = 900;
+    const th = Math.ceil(V.grassTop - V.standsTop) + 2;
+    const c = V.stands || (V.stands = document.createElement('canvas'));
+    c.width = Math.round(tw * V.dpr);
+    c.height = Math.round(th * V.dpr);
+    const x = c.getContext('2d');
+    x.setTransform(V.dpr, 0, 0, V.dpr, 0, 0);
+    x.clearRect(0, 0, tw, th);
+    x.fillStyle = '#0c1631';
+    x.beginPath();
+    x.moveTo(0, th);
+    for (let px = 0; px < tw; px += 90) {
+      const yy = th * (0.06 + 0.14 * Math.pow(Math.sin((px / tw) * Math.PI * 2), 2));
+      x.lineTo(px, yy);
+      x.lineTo(px + 90, yy);
+    }
+    x.lineTo(tw, th);
+    x.closePath();
+    x.fill();
+    // tiers of crowd
+    const rnd = seeded(5);
+    const colors = ['201,107,90', '90,123,201', '217,212,197', '201,163,90', '108,143,106', '160,120,190'];
+    const boardH = Math.max(8, th * 0.16);
+    const rowGap = Math.max(5, th * 0.075);
+    for (let y = th * 0.3; y < th - boardH - 3; y += rowGap) {
+      x.fillStyle = 'rgba(30, 44, 88, .9)';
+      x.fillRect(0, y + rowGap * 0.62, tw, 1);
+      for (let px = 2; px < tw - 2; px += 4 + rnd() * 3) {
+        if (rnd() < 0.18) continue;
+        const col = colors[Math.floor(rnd() * colors.length)];
+        x.fillStyle = 'rgba(' + col + ',' + (0.35 + rnd() * 0.4).toFixed(2) + ')';
+        const s = rnd() < 0.5 ? 2 : 3;
+        x.fillRect(px, y + rnd() * 2, s, s);
+      }
+    }
+    // perimeter boards
+    const by = th - boardH;
+    x.fillStyle = '#121d42';
+    x.fillRect(0, by, tw, boardH);
+    for (let px = 0; px < tw; px += 75) {
+      x.fillStyle = '#0a1230';
+      x.fillRect(px, by, 2, boardH);
+      x.fillStyle = 'rgba(244, 241, 232, .14)';
+      x.fillRect(px + 14, by + boardH * 0.4, 30 + (px % 3) * 6, Math.max(2, boardH * 0.18));
+    }
+  }
+
+  function buildGrain() {
+    const c = document.createElement('canvas');
+    c.width = 128;
+    c.height = 128;
+    const x = c.getContext('2d');
+    const rnd = seeded(3);
+    for (let i = 0; i < 900; i++) {
+      x.fillStyle = rnd() < 0.5 ? 'rgba(0, 0, 0, .10)' : 'rgba(255, 220, 200, .07)';
+      x.fillRect(rnd() * 128, rnd() * 128, 1 + rnd() * 1.5, 1);
+    }
+    V.grain = g.createPattern(c, 'repeat');
+  }
+
+  // World (meters) to screen. z is across the track, + toward the far side.
+  function sx(xm, z) { return V.rx + (xm - V.camX) * V.ppm + (z || 0) * V.obl; }
+  function sy(hm, z) { return V.ground - (z || 0) * V.kz - hm * V.ppm; }
+
+  // Paint on the track surface: units are cm along x and cm across, with the
+  // glyph "up" direction pointing to the far side so text reads naturally.
+  function groundPaint(xm, fn) {
+    const d = V.dpr;
+    g.setTransform((d * V.ppm) / 100, 0, (-d * V.obl) / 100, (d * V.kz) / 100, d * sx(xm, 0), d * V.ground);
+    fn();
+    g.setTransform(d, 0, 0, d, 0, 0);
+  }
+
+  function render(t) {
+    const r = S.race;
+    V.camX = r.x;
+    const W = V.W;
+    const H = V.H;
+    const d = V.dpr;
+    g.setTransform(d, 0, 0, d, 0, 0);
+    g.drawImage(V.sky, 0, 0, W, V.sky.height / d);
+
+    // floodlights
+    const lightPar = (V.camX * V.ppm * 0.22) % 520;
+    for (let i = -1; i < W / 520 + 2; i++) {
+      const lx = i * 520 - lightPar + 200;
+      const top = V.standsTop - Math.max(40, V.H * 0.12);
+      g.strokeStyle = '#0a1330';
+      g.lineWidth = 3;
+      g.beginPath();
+      g.moveTo(lx, V.grassTop);
+      g.lineTo(lx, top + 12);
+      g.stroke();
+      const glow = g.createRadialGradient(lx, top, 2, lx, top, 130);
+      glow.addColorStop(0, 'rgba(255, 244, 214, .5)');
+      glow.addColorStop(0.25, 'rgba(255, 236, 190, .14)');
+      glow.addColorStop(1, 'rgba(255, 236, 190, 0)');
+      g.fillStyle = glow;
+      g.fillRect(lx - 130, top - 130, 260, 260);
+      g.fillStyle = '#141f3f';
+      g.fillRect(lx - 22, top - 6, 44, 18);
+      g.fillStyle = '#fff6dc';
+      for (let k = 0; k < 6; k++) g.fillRect(lx - 18 + k * 6.5, top - 2, 4, 4);
+      for (let k = 0; k < 6; k++) g.fillRect(lx - 18 + k * 6.5, top + 5, 4, 4);
+    }
+
+    // grandstand
+    const tw = 900;
+    const stPar = (V.camX * V.ppm * 0.15) % tw;
+    const stH = V.stands.height / d;
+    for (let x0 = -stPar - tw; x0 < W; x0 += tw) g.drawImage(V.stands, x0, V.standsTop, tw, stH);
+
+    // infield grass with mowing stripes
+    g.fillStyle = '#235a30';
+    g.fillRect(0, V.grassTop, W, V.trackTop - V.grassTop);
+    const gPar = (V.camX * V.ppm * 0.7) % 120;
+    const depth = V.trackTop - V.grassTop;
+    g.fillStyle = 'rgba(0, 0, 0, .09)';
+    for (let x0 = -gPar - 120; x0 < W + 120; x0 += 120) {
+      g.beginPath();
+      g.moveTo(x0, V.trackTop);
+      g.lineTo(x0 + 60, V.trackTop);
+      g.lineTo(x0 + 60 + depth * 0.7, V.grassTop);
+      g.lineTo(x0 + depth * 0.7, V.grassTop);
+      g.closePath();
+      g.fill();
+    }
+
+    // track surface
+    g.fillStyle = COL.track;
+    g.fillRect(0, V.trackTop, W, H - V.trackTop);
+    if (V.grain) {
+      g.save();
+      g.translate(-((V.camX * V.ppm) % 128), 0);
+      g.fillStyle = V.grain;
+      g.fillRect(0, V.trackTop, W + 256, H - V.trackTop);
+      g.restore();
+    }
+    const shade = g.createLinearGradient(0, V.trackTop, 0, H);
+    shade.addColorStop(0, 'rgba(10, 19, 48, .35)');
+    shade.addColorStop(0.35, 'rgba(10, 19, 48, 0)');
+    shade.addColorStop(1, 'rgba(10, 19, 48, .25)');
+    g.fillStyle = shade;
+    g.fillRect(0, V.trackTop, W, H - V.trackTop);
+    // kerb and lane lines
+    g.fillStyle = '#d9dde6';
+    g.fillRect(0, V.trackTop - 3, W, 4);
+    g.fillStyle = 'rgba(244, 241, 232, .88)';
+    for (let k = 1; k <= 8; k++) {
+      const y = V.edges[k];
+      if (y > H + 2) break;
+      g.fillRect(0, Math.round(y) - 1, W, 2);
+    }
+
+    const xMin = V.camX - V.rx / V.ppm - 6;
+    const xMax = V.camX + (W - V.rx) / V.ppm + 3;
+    const inView = (x) => x > xMin && x < xMax;
+
+    // markings painted on the track
+    g.fillStyle = 'rgba(244, 241, 232, .9)';
+    if (inView(0)) groundPaint(0, () => { g.fillRect(-3, -427, 6, 1100); });
+    if (inView(r.distance)) groundPaint(r.distance, () => { g.fillRect(-6, -427, 12, 1100); });
+    for (const lx of [-2.4, r.distance - 2.4]) {
+      if (!inView(lx)) continue;
+      groundPaint(lx, () => {
+        g.font = '900 70px ' + FONT_DISPLAY;
+        g.textAlign = 'center';
+        g.textBaseline = 'middle';
+        g.fillStyle = 'rgba(244, 241, 232, .75)';
+        for (let k = 1; k <= 8; k++) g.fillText(String(k), 0, -(4 - k) * 122);
+      });
+    }
+    for (let m = 10; m < r.distance; m += 10) {
+      if (!inView(m)) continue;
+      groundPaint(m, () => {
+        g.fillStyle = 'rgba(244, 241, 232, .55)';
+        g.fillRect(-2, 38, 4, 23);
+        if (m % 50 === 0) {
+          g.font = '800 46px ' + FONT_DISPLAY;
+          g.textAlign = 'center';
+          g.textBaseline = 'middle';
+          g.fillStyle = 'rgba(244, 241, 232, .4)';
+          g.fillText(String(m), 30, 22);
+        }
+      });
+    }
+    // hurdle marks and take-off chevrons
+    const next = r.nextHurdle();
+    r.hurdles.forEach((h, i) => {
+      if (!inView(h.x) && !inView(h.x - 5)) return;
+      groundPaint(h.x, () => {
+        g.fillStyle = COL.hurdleMark;
+        g.fillRect(-6, -64, 12, 6);
+        g.fillRect(-6, 58, 12, 6);
+      });
+      if (h.state !== 'up') return;
+      const inZone = h === next && h.x - r.x <= 4.4 && h.x - r.x > 0;
+      const pulse = inZone && !reduceMotion ? 0.55 + 0.4 * Math.sin(t * 14) : 0.6;
+      for (const off of [3.6, 2.7, 1.8]) {
+        groundPaint(h.x - off, () => {
+          g.strokeStyle = 'rgba(255, 178, 46, ' + pulse.toFixed(2) + ')';
+          g.lineWidth = 10;
+          g.lineCap = 'round';
+          g.lineJoin = 'round';
+          g.beginPath();
+          g.moveTo(-22, -40);
+          g.lineTo(18, 0);
+          g.lineTo(-22, 40);
+          g.stroke();
+        });
+      }
+      if (i < 2 && S.phase !== 'finished') {
+        groundPaint(h.x - 5.6, () => {
+          g.font = '900 52px ' + FONT_DISPLAY;
+          g.textAlign = 'center';
+          g.textBaseline = 'middle';
+          g.fillStyle = 'rgba(255, 178, 46, .85)';
+          g.fillText('SQUAT', 0, 0);
+        });
+      }
+    });
+
+    drawFinishPost(r);
+    for (const h of r.hurdles) if (inView(h.x)) drawHurdle(h);
+    drawStars(t, r, inView);
+    drawRunner(t);
+    drawParticles();
+  }
+
+  function drawFinishPost(r) {
+    const z = 4.75;
+    const bx = sx(r.distance, z);
+    if (bx < -80 || bx > V.W + 80) return;
+    const by = sy(0, z);
+    const top = sy(1.9, z);
+    g.strokeStyle = '#d9dde6';
+    g.lineWidth = Math.max(2, V.ppm * 0.06);
+    g.beginPath();
+    g.moveTo(bx, by);
+    g.lineTo(bx, top);
+    g.stroke();
+    const bw = V.ppm * 1.35;
+    const bh = V.ppm * 0.5;
+    g.fillStyle = '#070b17';
+    g.fillRect(bx - bw / 2, top - bh, bw, bh);
+    g.strokeStyle = '#1f2b4d';
+    g.lineWidth = 2;
+    g.strokeRect(bx - bw / 2, top - bh, bw, bh);
+    g.fillStyle = COL.amber;
+    g.font = '900 ' + Math.round(bh * 0.6) + 'px ' + FONT_LED;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText(LF.formatTime(r.finished ? r.finishTime : r.time), bx, top - bh / 2);
+  }
+
+  // Hurdle seen from the side at a 3/4 angle. When hit it tips forward, the
+  // way real hurdles do, pivoting on the front of its base.
+  function drawHurdle(h) {
+    const HH = 0.914;
+    const ang = h.state === 'hit' ? easeOutBack(h.fall) * 1.38 : 0;
+    const ca = Math.cos(ang);
+    const sa = Math.sin(ang);
+    const rot = (dx, hm) => [dx * ca + hm * sa, -dx * sa + hm * ca];
+    const pt = (dx, hm, z) => {
+      const [rx, rh] = rot(dx, hm);
+      return [sx(h.x + rx, z), sy(rh, z)];
+    };
+    const lw = Math.max(2, V.ppm * 0.05);
+    g.lineCap = 'round';
+    for (const z of [0.56, -0.56]) {
+      const [x0, y0] = pt(-0.7, 0, z);
+      const [x1, y1] = pt(0, 0, z);
+      const [x2, y2] = pt(0, HH - 0.03, z);
+      g.strokeStyle = z > 0 ? '#9aa2b4' : '#e6e9f0';
+      g.lineWidth = lw;
+      g.beginPath();
+      g.moveTo(x0, y0);
+      g.lineTo(x1, y1);
+      g.lineTo(x2, y2);
+      g.stroke();
+    }
+    // top board, striped black and white
+    const corners = [pt(-0.02, HH, 0.6), pt(-0.02, HH, -0.6), pt(-0.02, HH - 0.07, -0.6), pt(-0.02, HH - 0.07, 0.6)];
+    g.fillStyle = '#f4f1e8';
+    g.beginPath();
+    g.moveTo(corners[0][0], corners[0][1]);
+    for (let i = 1; i < 4; i++) g.lineTo(corners[i][0], corners[i][1]);
+    g.closePath();
+    g.fill();
+    g.fillStyle = '#10131c';
+    for (let k = 0; k < 4; k++) {
+      const z0 = 0.6 - (k * 2 + 0.5) * 0.15;
+      const z1 = z0 - 0.15;
+      const a = pt(-0.02, HH, z0);
+      const b = pt(-0.02, HH, z1);
+      const c = pt(-0.02, HH - 0.07, z1);
+      const e = pt(-0.02, HH - 0.07, z0);
+      g.beginPath();
+      g.moveTo(a[0], a[1]);
+      g.lineTo(b[0], b[1]);
+      g.lineTo(c[0], c[1]);
+      g.lineTo(e[0], e[1]);
+      g.closePath();
+      g.fill();
+    }
+  }
+
+  function easeOutBack(k) {
+    const c1 = 1.4;
+    const c3 = c1 + 1;
+    return 1 + c3 * Math.pow(k - 1, 3) + c1 * Math.pow(k - 1, 2);
+  }
+
+  function drawStar(cx, cy, rad, rot) {
+    g.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const a = rot + (i * Math.PI) / 5 - Math.PI / 2;
+      const rr = i % 2 ? rad * 0.45 : rad;
+      g.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
+    }
+    g.closePath();
+    g.fill();
+  }
+
+  function drawStars(t, r, inView) {
+    for (const h of r.hurdles) {
+      if (h.state !== 'up' || !inView(h.x)) continue;
+      const bob = reduceMotion ? 0 : Math.sin(t * 3 + h.x) * 0.06;
+      const cx = sx(h.x, 0);
+      const cy = sy(2.45 + bob, 0);
+      const rad = V.ppm * 0.2;
+      const glow = g.createRadialGradient(cx, cy, 1, cx, cy, rad * 2.6);
+      glow.addColorStop(0, 'rgba(255, 178, 46, .45)');
+      glow.addColorStop(1, 'rgba(255, 178, 46, 0)');
+      g.fillStyle = glow;
+      g.fillRect(cx - rad * 2.6, cy - rad * 2.6, rad * 5.2, rad * 5.2);
+      g.fillStyle = COL.amber;
+      drawStar(cx, cy, rad, reduceMotion ? 0 : t * 0.8);
+    }
+  }
+
+  // Procedural runner in the style of a sports pictogram. Meters, y up,
+  // origin on the ground under the hips.
+  function runnerPose(a) {
+    const TH = 0.46;
+    const SH = 0.46;
+    const TOR = 0.55;
+    const UA = 0.29;
+    const FA = 0.27;
+    const s = a.gait;
+    const legs = [];
+    for (let i = 0; i < 2; i++) {
+      const w = 2 * Math.PI * (a.phase + i * 0.5);
+      let th = (0.06 + 0.62 * s) * Math.sin(w);
+      let kn = (0.12 + 1.45 * s) * (0.5 + 0.5 * Math.cos(w + 0.3));
+      th = mix(th, 1.12, a.crouch);
+      kn = mix(kn, 2.05, a.crouch);
+      th = mix(th, i === 0 ? 1.45 : -0.25, a.air);
+      kn = mix(kn, i === 0 ? 0.12 : 1.85, a.air);
+      const knee = { x: TH * Math.sin(th), y: -TH * Math.cos(th) };
+      const shin = th - kn;
+      const ankle = { x: knee.x + SH * Math.sin(shin), y: knee.y - SH * Math.cos(shin) };
+      const fa = shin + Math.PI / 2 - 0.15;
+      const toe = { x: ankle.x + 0.15 * Math.sin(fa), y: ankle.y - 0.15 * Math.cos(fa) };
+      legs.push({ knee, ankle, toe });
+    }
+    const low = Math.min(legs[0].ankle.y, legs[1].ankle.y, legs[0].toe.y, legs[1].toe.y);
+    const breathe = s < 0.05 && a.air < 0.1 && !reduceMotion ? Math.sin((a.t || 0) * 1.6) * 0.008 : 0;
+    const hip = { x: 0, y: -low + 0.05 + breathe };
+    let lean = 0.05 + 0.18 * s;
+    lean = mix(lean, 0.5, a.crouch * 0.9);
+    lean = mix(lean, 0.62, a.air);
+    lean += 0.75 * a.stumble;
+    const shoulder = { x: hip.x + TOR * Math.sin(lean), y: hip.y + TOR * Math.cos(lean) };
+    const head = { x: shoulder.x + 0.21 * Math.sin(lean * 0.8), y: shoulder.y + 0.21 * Math.cos(lean * 0.8) };
+    const arms = [];
+    for (let j = 0; j < 2; j++) {
+      const w = 2 * Math.PI * (a.phase + (1 - j) * 0.5);
+      let al = (0.1 + 0.85 * s) * Math.sin(w);
+      let el2 = 0.35 + 1.15 * s;
+      al = mix(al, -0.85, a.crouch);
+      el2 = mix(el2, 0.5, a.crouch);
+      al = mix(al, j === 1 ? 1.55 : -0.55, a.air);
+      el2 = mix(el2, j === 1 ? 0.25 : 1.2, a.air);
+      al = mix(al, 2.3, a.stumble * 0.8);
+      const elbow = { x: shoulder.x + UA * Math.sin(al), y: shoulder.y - UA * Math.cos(al) };
+      const wrist = { x: elbow.x + FA * Math.sin(al + el2), y: elbow.y - FA * Math.cos(al + el2) };
+      arms.push({ elbow, wrist });
+    }
+    const abs = (p) => ({ x: hip.x + p.x, y: hip.y + p.y });
+    return {
+      hip, shoulder, head, arms,
+      legs: legs.map((l) => ({ knee: abs(l.knee), ankle: abs(l.ankle), toe: abs(l.toe) })),
+    };
+  }
+
+  function drawRunner() {
+    const r = S.race;
+    const a = S.av;
+    const p = runnerPose(a);
+    const ox = V.rx;
+    const oy = V.ground - r.y * V.ppm;
+    const X = (q) => ox + q.x * V.ppm;
+    const Y = (q) => oy - q.y * V.ppm;
+    const k = clamp(1 - r.y / 2.2, 0.35, 1);
+    g.fillStyle = 'rgba(0, 0, 0, .3)';
+    g.beginPath();
+    g.ellipse(ox + 0.06 * V.ppm, V.ground + 1, 0.42 * V.ppm * k, 0.08 * V.ppm * k, 0, 0, Math.PI * 2);
+    g.fill();
+    if (a.charged && a.air < 0.5) {
+      const gl = g.createRadialGradient(X(p.hip), Y(p.hip), 2, X(p.hip), Y(p.hip), V.ppm * 0.9);
+      gl.addColorStop(0, 'rgba(87, 217, 143, .45)');
+      gl.addColorStop(1, 'rgba(87, 217, 143, 0)');
+      g.fillStyle = gl;
+      g.fillRect(X(p.hip) - V.ppm, Y(p.hip) - V.ppm, V.ppm * 2, V.ppm * 2);
+    }
+    g.lineCap = 'round';
+    g.lineJoin = 'round';
+    const limb = (pts, col, w) => {
+      g.strokeStyle = col;
+      g.lineWidth = w;
+      g.beginPath();
+      g.moveTo(X(pts[0]), Y(pts[0]));
+      for (let i = 1; i < pts.length; i++) g.lineTo(X(pts[i]), Y(pts[i]));
+      g.stroke();
+    };
+    const w = Math.max(3, 0.11 * V.ppm);
+    limb([p.hip, p.legs[1].knee, p.legs[1].ankle, p.legs[1].toe], COL.runnerFar, w);
+    limb([p.shoulder, p.arms[1].elbow, p.arms[1].wrist], COL.runnerFar, w * 0.88);
+    limb([p.hip, p.shoulder], COL.amber, Math.max(5, 0.22 * V.ppm));
+    g.fillStyle = COL.runner;
+    g.beginPath();
+    g.arc(X(p.head), Y(p.head), Math.max(3, 0.125 * V.ppm), 0, Math.PI * 2);
+    g.fill();
+    limb([p.hip, p.legs[0].knee, p.legs[0].ankle, p.legs[0].toe], COL.runner, w);
+    limb([p.shoulder, p.arms[0].elbow, p.arms[0].wrist], COL.runner, w * 0.88);
+  }
+
+  // ------------------------------------------------- particles and popups
+  function spawnDust() {
+    if (reduceMotion) return;
+    const r = S.race;
+    for (let i = 0; i < 3; i++) {
+      S.particles.push({
+        x: r.x - 0.1 + Math.random() * 0.25, h: 0.03, z: (Math.random() - 0.5) * 0.5,
+        vx: -0.4 - Math.random() * 0.8, vh: 0.5 + Math.random() * 0.9,
+        life: 0.3 + Math.random() * 0.2, max: 0.5, col: '226, 120, 92', size: 0.035,
+      });
+    }
+  }
+  function burst(x, h, col, n) {
+    if (reduceMotion) return;
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 1 + Math.random() * 2.5;
+      S.particles.push({
+        x, h, z: 0, vx: Math.cos(a) * sp, vh: Math.sin(a) * sp + 1, life: 0.5 + Math.random() * 0.4, max: 0.9,
+        col: col === COL.amber ? '255, 178, 46' : '244, 241, 232', size: 0.05,
+      });
+    }
+  }
+  function popup(text, x, h, color) { S.popups.push({ text, x, h, color, life: 1.1, max: 1.1 }); }
+
+  function updateParticles(dt) {
+    for (const p of S.particles) {
+      p.life -= dt;
+      p.x += p.vx * dt;
+      p.h += p.vh * dt;
+      p.vh -= 7 * dt;
+      if (p.h < 0) { p.h = 0; p.vh *= -0.3; p.vx *= 0.6; }
+    }
+    S.particles = S.particles.filter((p) => p.life > 0);
+    for (const q of S.popups) { q.life -= dt; q.h += dt * 0.6; }
+    S.popups = S.popups.filter((q) => q.life > 0);
+  }
+
+  function drawParticles() {
+    for (const p of S.particles) {
+      const a = clamp(p.life / p.max, 0, 1);
+      g.fillStyle = 'rgba(' + p.col + ',' + a.toFixed(2) + ')';
+      const s = Math.max(2, p.size * V.ppm);
+      g.fillRect(sx(p.x, p.z) - s / 2, sy(p.h, p.z) - s / 2, s, s);
+    }
+    for (const q of S.popups) {
+      const a = clamp(q.life / q.max, 0, 1);
+      g.globalAlpha = Math.min(1, a * 1.6);
+      g.font = '900 ' + Math.round(Math.max(18, V.ppm * 0.42)) + 'px ' + FONT_DISPLAY;
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.lineWidth = 4;
+      g.strokeStyle = 'rgba(5, 9, 22, .75)';
+      const tx = sx(q.x, 0);
+      const ty = sy(q.h, 0);
+      g.strokeText(q.text.toUpperCase(), tx, ty);
+      g.fillStyle = q.color;
+      g.fillText(q.text.toUpperCase(), tx, ty);
+      g.globalAlpha = 1;
+    }
+  }
+
+  // ------------------------------------------------------ camera overlay
+  const sk = el.skel.getContext('2d');
+  const BONES = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28]];
+  function drawSkeleton() {
+    sk.clearRect(0, 0, el.skel.width, el.skel.height);
+    const pts = S.pts;
+    if (!pts) return;
+    const col = S.framing === 'ok' ? COL.amber : COL.bad;
+    sk.lineWidth = 6;
+    sk.lineCap = 'round';
+    sk.strokeStyle = col;
+    for (const [a, b] of BONES) {
+      const p = pts[a];
+      const q = pts[b];
+      if (!p || !q || p.v < 0.4 || q.v < 0.4) continue;
+      sk.beginPath();
+      sk.moveTo(p.x, p.y);
+      sk.lineTo(q.x, q.y);
+      sk.stroke();
+    }
+    sk.fillStyle = '#ffffff';
+    for (const i of [0, 15, 16, 25, 26, 27, 28]) {
+      const p = pts[i];
+      if (!p || p.v < 0.4) continue;
+      sk.beginPath();
+      sk.arc(p.x, p.y, 5, 0, Math.PI * 2);
+      sk.fill();
+    }
+  }
+
+  // ------------------------------------------------------- signals panel
+  function recordSignals(t) {
+    S.sig.push({ t, s: S.stepSig, d: S.depth });
+    while (S.sig.length && t - S.sig[0].t > 6) S.sig.shift();
+    while (S.marks.length && t - S.marks[0].t > 6) S.marks.shift();
+  }
+
+  function sizeSigCanvases() {
+    for (const c of [el.sigStep, el.sigSquat]) {
+      const w = c.clientWidth || 300;
+      const h = c.clientHeight || 72;
+      c.width = Math.round(w * V.dpr);
+      c.height = Math.round(h * V.dpr);
+    }
+  }
+
+  function plot(canvas, get, min, max, lines, marks, t, labelFor) {
+    const x = canvas.getContext('2d');
+    const w = canvas.width / V.dpr;
+    const h = canvas.height / V.dpr;
+    x.setTransform(V.dpr, 0, 0, V.dpr, 0, 0);
+    x.clearRect(0, 0, w, h);
+    const Y = (v) => h - ((clamp(v, min, max) - min) / (max - min)) * h;
+    const X = (tt) => w - ((t - tt) / 6) * w;
+    x.strokeStyle = 'rgba(244, 241, 232, .18)';
+    x.lineWidth = 1;
+    x.beginPath();
+    x.moveTo(0, Y(0));
+    x.lineTo(w, Y(0));
+    x.stroke();
+    x.setLineDash([4, 4]);
+    for (const ln of lines) {
+      x.strokeStyle = ln.color;
+      x.beginPath();
+      x.moveTo(0, Y(ln.v));
+      x.lineTo(w, Y(ln.v));
+      x.stroke();
+    }
+    x.setLineDash([]);
+    x.strokeStyle = COL.lane;
+    x.lineWidth = 1.5;
+    x.beginPath();
+    S.sig.forEach((p, i) => (i ? x.lineTo(X(p.t), Y(get(p))) : x.moveTo(X(p.t), Y(get(p)))));
+    x.stroke();
+    x.font = '700 10px ' + FONT_DISPLAY;
+    x.textAlign = 'center';
+    for (const m of marks) {
+      const lab = labelFor(m);
+      if (!lab) continue;
+      x.fillStyle = lab.color;
+      x.fillRect(X(m.t) - 0.5, 0, 1, h);
+      x.fillText(lab.text, X(m.t), 10);
+    }
+  }
+
+  let readoutT = 0;
+  function drawSignals(t) {
+    if (el.tune.hidden) return;
+    plot(el.sigStep, (p) => p.s, -0.3, 0.3,
+      [{ v: S.eff.step, color: COL.amber }, { v: -S.eff.step, color: COL.amber }],
+      S.marks, t, (m) => (m.type === 'L' || m.type === 'R' ? { text: m.type, color: 'rgba(255, 178, 46, .8)' } : null));
+    plot(el.sigSquat, (p) => p.d, -0.2, 1.3,
+      [{ v: S.eff.squat, color: COL.amber }, { v: S.eff.squat * 0.5, color: 'rgba(244, 241, 232, .35)' }],
+      S.marks, t, (m) => (m.type === 'down' ? { text: '▼', color: COL.good } : m.type === 'up' ? { text: '▲', color: COL.amber } : null));
+    el.sigStepVal.textContent = S.stepSig.toFixed(2);
+    el.sigSquatVal.textContent = S.depth.toFixed(2);
+    if (t - readoutT > 0.25) {
+      readoutT = t;
+      const lines = [];
+      if (S.mode === 'camera') {
+        lines.push('Tracking: ' + (S.delegate || 'loading') + ' · ' + Math.round(S.poseFps) + ' fps · ' + S.inferMs.toFixed(0) + ' ms per frame');
+        lines.push('Framing: ' + S.framing + (S.baseline ? '' : ' · not calibrated'));
+        if (S.baseline) {
+          lines.push('Noise floor: steps ' + S.baseline.stepNoise.toFixed(3) + ' · squat ' + S.baseline.depthNoise.toFixed(2));
+        }
+      } else {
+        lines.push('Keys/touch mode: signals are simulated.');
+      }
+      lines.push('In use: step ' + S.eff.step.toFixed(3) + ' · squat ' + S.eff.squat.toFixed(2) + ' · cadence ' + Math.round(S.cadence) + ' spm');
+      el.readout.textContent = lines.join('\n');
+      el.readout.style.whiteSpace = 'pre-line';
+    }
+  }
+
+  function toggleTune(force) {
+    const open = force == null ? el.tune.hidden : force;
+    el.tune.hidden = !open;
+    el.btnSignals.setAttribute('aria-pressed', String(open));
+    if (open) sizeSigCanvases();
+  }
+
+  function syncControls() {
+    el.stepT.value = settings.stepT;
+    el.stepTOut.textContent = Number(settings.stepT).toFixed(3);
+    el.squatT.value = settings.squatDown;
+    el.squatTOut.textContent = Number(settings.squatDown).toFixed(2);
+    el.btnSound.setAttribute('aria-pressed', String(settings.sound));
+    el.soundWave.style.opacity = settings.sound ? '1' : '0';
+    document.querySelectorAll('.pick button').forEach((b) => b.setAttribute('aria-checked', String(Number(b.dataset.dist) === settings.distance)));
+  }
+
+  // ---------------------------------------------------------------- wake lock
+  let wakeLock = null;
+  async function keepAwake() {
+    try {
+      if (!wakeLock && 'wakeLock' in navigator && document.visibilityState === 'visible') {
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', () => { wakeLock = null; });
+      }
+    } catch (e) { wakeLock = null; }
+  }
+
+  // ------------------------------------------------------------------ wiring
+  el.btnCamera.addEventListener('click', startCamera);
+  el.btnManual.addEventListener('click', startManual);
+  el.btnAgain.addEventListener('click', () => raceAgain());
+  el.btnSetup.addEventListener('click', () => showIntro());
+  el.btnSignals.addEventListener('click', () => toggleTune());
+  el.tuneClose.addEventListener('click', () => toggleTune(false));
+  el.btnSound.addEventListener('click', () => {
+    settings.sound = !settings.sound;
+    store.set('sound', settings.sound);
+    if (!settings.sound && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+    else Sound.unlock();
+    syncControls();
+  });
+  if (!document.fullscreenEnabled || !document.documentElement.requestFullscreen) {
+    el.btnFull.hidden = true;
+  } else {
+    el.btnFull.addEventListener('click', () => {
+      const p = document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+      if (p && p.catch) p.catch(() => {});
+    });
+  }
+  el.stepT.addEventListener('input', () => {
+    settings.stepT = Number(el.stepT.value);
+    store.set('stepT', settings.stepT);
+    applyThresholds();
+    syncControls();
+  });
+  el.squatT.addEventListener('input', () => {
+    settings.squatDown = Number(el.squatT.value);
+    store.set('squatDown', settings.squatDown);
+    applyThresholds();
+    syncControls();
+  });
+  el.btnResetT.addEventListener('click', () => {
+    settings.stepT = DEFAULTS.stepT;
+    settings.squatDown = DEFAULTS.squatDown;
+    store.set('stepT', settings.stepT);
+    store.set('squatDown', settings.squatDown);
+    applyThresholds();
+    syncControls();
+  });
+  el.btnRecal.addEventListener('click', () => {
+    if (S.mode === 'camera' && S.phase !== 'intro') enterSetup();
+  });
+  document.querySelectorAll('.pick button').forEach((b) => {
+    b.addEventListener('click', () => {
+      settings.distance = Number(b.dataset.dist);
+      store.set('distance', settings.distance);
+      syncControls();
+      newRace();
+    });
+  });
+  document.addEventListener('pointerdown', () => Sound.unlock(), { passive: true });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      if (S.phase === 'running') pauseRace('hidden');
+    } else {
+      if (S.mode) keepAwake();
+      if (S.phase === 'paused' && S.pausedReason === 'hidden') {
+        if (S.mode === 'manual' || S.framing === 'ok') resumeRace();
+        else S.pausedReason = 'framing';
+      }
+    }
+  });
+  window.addEventListener('resize', resize);
+
+  let lastFrame = performance.now();
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const dt = Math.min(0.05, Math.max(0, (now - lastFrame) / 1000));
+    lastFrame = now;
+    const t = now / 1000;
+    detectPose(now);
+    update(dt, t);
+    render(t);
+    drawSignals(t);
+    if (now - S.poseFpsT > 1000) {
+      S.poseFps = (S.poseFrames * 1000) / (now - S.poseFpsT || 1);
+      S.poseFrames = 0;
+      S.poseFpsT = now;
+    }
+  }
+
+  resize();
+  syncControls();
+  applyThresholds();
+  showIntro();
+  requestAnimationFrame(frame);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { hudCache.dist = null; });
+
+  // Read-only handle for debugging in the console.
+  window.laneFour = { state: S, settings };
+})();
+
+</script>
+</body>
+</html>
