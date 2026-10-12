@@ -12,10 +12,12 @@ then every 35 m).
 - Verified: 20 unit tests; the real MediaPipe model loads and tracks a person in headless Chromium;
   a scripted body runs 200 m through the camera code path clearing 5/5 hurdles; keys mode works on
   phone portrait and landscape with no console errors.
-- Not published yet. Next step: public GitHub repo `lane-four` with Pages serving `main` + `/docs`,
-  so the game opens on a phone over https. The owner may already have created the repo by hand and
-  uploaded an `index.html` at its root; check with `gh repo view` before creating anything.
-- Not a git repository yet.
+- Published 2026-10-12: https://github.com/Lukard/lane-four, Pages serving `main` + `/docs` at
+  https://lukard.github.io/lane-four/ (verified byte-identical to `docs/index.html`). Pages redeploys
+  on push, so run `npm run build` and commit `docs/index.html` with any `src/` change.
+- The repo uses a local git identity (GitHub noreply email), not the global work address, because
+  the repo is public. Keep it that way.
+- Next step: open the Pages URL on a phone and try it with a real body in a real room.
 
 ## Commands
 
