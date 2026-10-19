@@ -1368,13 +1368,740 @@ kbd {
 
 </script>
 <script>
-/* Lane Four 3D world: track, markings, stands, sky, hurdles, stars and the
-   finish gantry, built from a THREE namespace passed in. Placeholder: a later
-   stage fills LaneFour.World3D. */
+/* Lane Four 3D assets: the procedural pieces the 3D world is made of. Texture painters
+   (each draws on a 2D canvas context), the glyph atlas, the LED board face, a vertex-colour
+   mesh builder and the fixed geometries (sky, stars, chevron, hurdle, floodlight head).
+   Attaches LaneFour.Assets3D; world3d.js is the only user. Nothing here touches the
+   DOM itself (painters take a context), and THREE is always passed in. */
 (function (root) {
   'use strict';
-  if (!root.LaneFour) throw new Error('world3d.js needs core.js loaded first');
-  Object.assign(root.LaneFour, { World3D: {} });
+  const LF = root.LaneFour;
+  if (!LF || !LF.clamp) throw new Error('assets3d.js needs core.js loaded first');
+  const { clamp } = LF;
+
+  const FONT_DISPLAY = '"Big Shoulders Display", "Arial Narrow", sans-serif';
+  const FONT_LED = '"Doto", ui-monospace, Menlo, monospace';
+  const AMBER = '#ffb22e';
+  const ATLAS = Object.freeze({ w: 1024, h: 256, cell: 128 });
+
+  function seeded(seed) {
+    let s = seed >>> 0;
+    return () => {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      return s / 4294967296;
+    };
+  }
+
+  const rgb = (T, hex) => { const c = new T.Color(hex); return [c.r, c.g, c.b]; };
+
+  // Collects quads and boxes into one indexed BufferGeometry. A quad is four [x, y, z]
+  // corners going round plus the direction it must face, so the winding is always right.
+  // Box faces carry a fixed shade in their colour; the face seen from behind (-X) keeps
+  // the exact hex, so hurdles read true from the chase camera.
+  class Mesher {
+    constructor(color, uv) {
+      this.color = color;
+      this.uv = uv;
+      this.p = [];
+      this.c = [];
+      this.t = [];
+      this.i = [];
+    }
+    quad(a, b, c, d, hint, col, uvs) {
+      const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+      const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+      const dot = (uy * vz - uz * vy) * hint[0] + (uz * vx - ux * vz) * hint[1] + (ux * vy - uy * vx) * hint[2];
+      const n = this.p.length / 3;
+      this.p.push(...a, ...b, ...c, ...d);
+      for (let k = 0; k < 4; k++) {
+        if (this.color) this.c.push(col[0], col[1], col[2]);
+        if (this.uv) this.t.push(uvs[k][0], uvs[k][1]);
+      }
+      if (dot >= 0) this.i.push(n, n + 1, n + 2, n, n + 2, n + 3);
+      else this.i.push(n, n + 2, n + 1, n, n + 3, n + 2);
+    }
+    box(cx, cy, cz, sx, sy, sz, col) {
+      const x0 = cx - sx / 2, x1 = cx + sx / 2, y0 = cy - sy / 2, y1 = cy + sy / 2, z0 = cz - sz / 2, z1 = cz + sz / 2;
+      const f = (a, b, c, d, n, k) => this.quad(a, b, c, d, n, [col[0] * k, col[1] * k, col[2] * k]);
+      f([x0, y0, z0], [x0, y1, z0], [x0, y1, z1], [x0, y0, z1], [-1, 0, 0], 1);
+      f([x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1], [1, 0, 0], 0.75);
+      f([x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1], [0, 1, 0], 1);
+      f([x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], [0, -1, 0], 0.6);
+      f([x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [0, 0, -1], 0.82);
+      f([x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1], [0, 0, 1], 0.82);
+    }
+    geometry(T) {
+      const g = new T.BufferGeometry();
+      g.setAttribute('position', new T.Float32BufferAttribute(this.p, 3));
+      if (this.color) g.setAttribute('color', new T.Float32BufferAttribute(this.c, 3));
+      if (this.uv) g.setAttribute('uv', new T.Float32BufferAttribute(this.t, 2));
+      g.setIndex(this.i);
+      return g;
+    }
+  }
+
+  // ---------------------------------------------------------------- textures
+  const painters = {
+    track(x) { // 512 across (9.76 m) x 128 along (4 m)
+      x.fillStyle = '#c4472d';
+      x.fillRect(0, 0, 512, 128);
+      const rnd = seeded(3);
+      for (let i = 0; i < 3600; i++) {
+        x.fillStyle = rnd() < 0.5 ? 'rgba(0,0,0,.10)' : 'rgba(255,220,200,.07)';
+        x.fillRect(rnd() * 512, rnd() * 128, 1 + rnd() * 1.5, 1);
+      }
+      x.fillStyle = '#d9dde6'; // 25 cm kerb
+      x.fillRect(0, 0, 13, 128);
+      x.fillStyle = '#f4f1e8'; // 6 cm lane lines every 1.22 m = 64 px
+      for (let j = 1; j <= 8; j++) x.fillRect(Math.min(j * 64 - 1.6, 512 - 3.2), 0, 3.2, 128);
+    },
+    grass(x) { // 64 across x 256 along (8 m): one plain band, one darker
+      x.fillStyle = '#235a30';
+      x.fillRect(0, 0, 64, 256);
+      x.fillStyle = 'rgba(0,0,0,.09)';
+      x.fillRect(0, 128, 64, 128);
+    },
+    crowd(x) { // 512 x 256 per 24 m; row 0 is the top of the stand
+      x.fillStyle = '#0c1631';
+      x.fillRect(0, 0, 512, 256);
+      const rnd = seeded(5);
+      const cols = ['201,107,90', '90,123,201', '217,212,197', '201,163,90', '108,143,106', '160,120,190'];
+      for (let y = 18; y < 248; y += 14) {
+        x.fillStyle = 'rgba(30,44,88,.9)';
+        x.fillRect(0, y + 9, 512, 1);
+        for (let px = 2; px < 508; px += 6 + rnd() * 4) {
+          if (rnd() < 0.18) continue;
+          x.fillStyle = 'rgba(' + cols[Math.floor(rnd() * cols.length)] + ',' + (0.35 + rnd() * 0.4).toFixed(2) + ')';
+          x.fillRect(px, y + rnd() * 2, rnd() < 0.5 ? 3 : 4, 3);
+        }
+      }
+    },
+    boards(x) { // 256 x 64 = 6 m x 1 m, two panels
+      x.fillStyle = '#121d42';
+      x.fillRect(0, 0, 256, 64);
+      for (let p = 0; p < 2; p++) {
+        x.fillStyle = '#0a1230';
+        x.fillRect(p * 128, 0, 3, 64);
+        x.fillStyle = 'rgba(244,241,232,.14)';
+        x.fillRect(p * 128 + 18, 26, 60 + p * 12, 12);
+      }
+    },
+    glow(x) { // greyscale for additive blending, so no alpha is involved
+      const g = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+      g.addColorStop(0, '#fff');
+      g.addColorStop(0.3, '#6b6b6b');
+      g.addColorStop(1, '#000');
+      x.fillStyle = g;
+      x.fillRect(0, 0, 128, 128);
+    },
+  };
+
+  // Glyph atlas: row 0 holds the lane digits and SQUAT, row 1 the 50 m labels. It is
+  // greyscale (grey level = alpha, used as an alphaMap); colour comes from vertex colours.
+  const ITEMS = [];
+  for (let k = 1; k <= 8; k++) ITEMS.push({ key: 'd' + k, text: String(k), row: 0, font: 104, grey: 191 });
+  ITEMS.push({ key: 'sq', text: 'SQUAT', row: 0, font: 100, grey: 217, fixedW: 290 });
+  for (let m = 50; m <= 350; m += 50) ITEMS.push({ key: 'm' + m, text: String(m), row: 1, font: 84, grey: 102 });
+
+  // Lays the items out in two 128 px rows and paints them; returns key -> pixel rect.
+  // Run again when the display font arrives: the glyph widths, so the rects, change.
+  function bakeAtlas(g) {
+    const rects = {};
+    g.fillStyle = '#000';
+    g.fillRect(0, 0, ATLAS.w, ATLAS.h);
+    g.textAlign = 'center';
+    g.textBaseline = 'alphabetic';
+    for (let row = 0; row < 2; row++) {
+      const its = ITEMS.filter((it) => it.row === row);
+      const widths = its.map((it) => { g.font = '900 ' + it.font + 'px ' + FONT_DISPLAY; return g.measureText(it.text).width; });
+      const cells = its.map((it, i) => it.fixedW || widths[i] + 16);
+      const k = Math.min(1, ATLAS.w / cells.reduce((s, w) => s + w, 0));
+      let x = 0;
+      its.forEach((it, i) => {
+        const cw = cells[i] * k;
+        g.save();
+        g.font = '900 ' + it.font + 'px ' + FONT_DISPLAY;
+        const m = g.measureText(it.text);
+        const asc = m.actualBoundingBoxAscent || it.font * 0.72;
+        const desc = m.actualBoundingBoxDescent || 0;
+        g.translate(x + cw / 2, row * ATLAS.cell + ATLAS.cell / 2 + (asc - desc) / 2);
+        g.scale(Math.min(1, (cw - 10) / widths[i]), 1);
+        g.fillStyle = 'rgb(' + it.grey + ',' + it.grey + ',' + it.grey + ')';
+        g.fillText(it.text, 0, 0);
+        g.restore();
+        rects[it.key] = { x, y: row * ATLAS.cell, w: cw, h: ATLAS.cell };
+        x += cw;
+      });
+    }
+    return rects;
+  }
+
+  function drawLed(g, str) { // the 512 x 128 finish board face
+    g.fillStyle = '#070b17';
+    g.fillRect(0, 0, 512, 128);
+    g.strokeStyle = '#1f2b4d';
+    g.lineWidth = 6;
+    g.strokeRect(3, 3, 506, 122);
+    g.fillStyle = AMBER;
+    g.font = '900 80px ' + FONT_LED;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText(str, 256, 68);
+  }
+
+  // --------------------------------------------------------------- geometry
+  const basis = (T, g, x, y, z) => g.applyMatrix4(new T.Matrix4().makeBasis(x, y, z));
+  const V = (T, x, y, z) => new T.Vector3(x, y, z);
+
+  const geo = {
+    // Inverted sphere with a vertical gradient: zenith #050b20, #13244c at 35 deg, horizon #1b2f5c.
+    skyDome(T) {
+      const g = new T.SphereGeometry(100, 24, 8);
+      const pos = g.attributes.position, cols = new Float32Array(pos.count * 3);
+      const zen = new T.Color('#050b20'), mid = new T.Color('#13244c'), hor = new T.Color('#1b2f5c'), c = new T.Color();
+      for (let i = 0; i < pos.count; i++) {
+        const e = (Math.asin(clamp(pos.getY(i) / 100, -1, 1)) * 180) / Math.PI;
+        if (e <= 35) c.copy(hor).lerp(mid, clamp(e / 35, 0, 1));
+        else c.copy(mid).lerp(zen, clamp((e - 35) / 55, 0, 1));
+        cols.set([c.r, c.g, c.b], i * 3);
+      }
+      g.setAttribute('color', new T.BufferAttribute(cols, 3));
+      return g;
+    },
+    // 150 seeded stars in the forward half of the sky (the camera never turns).
+    skyStars(T) {
+      const g = new T.BufferGeometry();
+      const rnd = seeded(11), p = new Float32Array(450), c = new Float32Array(450), base = new T.Color('#e8eeff');
+      for (let i = 0; i < 150; i++) {
+        const az = (rnd() - 0.5) * 2.8, el = 0.14 + rnd() * 1.17, b = 0.2 + rnd() * 0.55;
+        p.set([95 * Math.cos(el) * Math.cos(az), 95 * Math.sin(el), 95 * Math.cos(el) * Math.sin(az)], i * 3);
+        c.set([base.r * b, base.g * b, base.b * b], i * 3);
+      }
+      g.setAttribute('position', new T.BufferAttribute(p, 3));
+      g.setAttribute('color', new T.BufferAttribute(c, 3));
+      return g;
+    },
+    // Take-off chevron, 1.2 m wide and 0.6 m deep, apex toward +X, lying flat (drawn as (Z, X)).
+    chevron(T) {
+      const s = new T.Shape();
+      s.moveTo(0, 0.3).lineTo(0.6, -0.12).lineTo(0.6, -0.3).lineTo(0, 0.12).lineTo(-0.6, -0.3).lineTo(-0.6, -0.12).closePath();
+      return basis(T, new T.ShapeGeometry(s), V(T, 0, 0, 1), V(T, 1, 0, 0), V(T, 0, 1, 0));
+    },
+    // Hurdle with its origin at the front of the base: L-shaped legs (post at x 0, foot 0.7 m back),
+    // a 1.2 x 0.18 m board on the camera side of the posts, striped. +Z is the near, bright leg.
+    hurdle(T) {
+      const m = new Mesher(true, false), near = rgb(T, '#e6e9f0'), far = rgb(T, '#9aa2b4'), white = rgb(T, '#f4f1e8'), ink = rgb(T, '#10131c');
+      for (const [z, c] of [[0.56, near], [-0.56, far]]) {
+        m.box(-0.025, 0.442, z, 0.05, 0.884, 0.05, c);
+        m.box(-0.35, 0.025, z, 0.7, 0.05, 0.05, c);
+      }
+      m.box(-0.07, 0.824, 0, 0.04, 0.18, 1.2, white); // y 0.734 .. 0.914
+      for (const z of [-0.45, -0.15, 0.15, 0.45]) m.box(-0.07, 0.824, z, 0.044, 0.179, 0.15, ink);
+      return m.geometry(T);
+    },
+    // Ten-point star (r 0.2, inner 0.09) in the YZ plane, upright, facing the camera (-X).
+    star(T) {
+      const s = new T.Shape();
+      for (let i = 0; i < 10; i++) {
+        const a = Math.PI / 2 + (i * Math.PI) / 5, r = i % 2 ? 0.09 : 0.2;
+        if (i) s.lineTo(Math.cos(a) * r, Math.sin(a) * r); else s.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+      }
+      return basis(T, new T.ShapeGeometry(s), V(T, 0, 0, 1), V(T, 0, 1, 0), V(T, -1, 0, 0));
+    },
+    // A square glow plane facing the camera (-X).
+    glowPlane(T, size) { return basis(T, new T.PlaneGeometry(size, size), V(T, 0, 0, 1), V(T, 0, 1, 0), V(T, -1, 0, 0)); },
+    // Floodlight head centred on the pole top: #141f3f box with a 6 x 2 grid of lamps on its +Z face.
+    head(T) {
+      const m = new Mesher(true, false), lamp = rgb(T, '#fff6dc');
+      m.box(0, 0, 0, 3.4, 1.5, 0.7, rgb(T, '#141f3f'));
+      for (let i = 0; i < 6; i++) {
+        for (let j = 0; j < 2; j++) {
+          const cx = -1.4 + i * 0.56, cy = -0.35 + j * 0.7;
+          m.quad([cx - 0.22, cy - 0.2, 0.36], [cx + 0.22, cy - 0.2, 0.36], [cx + 0.22, cy + 0.2, 0.36], [cx - 0.22, cy + 0.2, 0.36], [0, 0, 1], lamp);
+        }
+      }
+      return m.geometry(T);
+    },
+  };
+
+  Object.assign(LF, { Assets3D: { FONT_DISPLAY, FONT_LED, AMBER, ATLAS, seeded, rgb, Mesher, painters, bakeAtlas, drawLed, geo } });
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
+/* Lane Four 3D world: the static stadium, built once from a THREE namespace passed in.
+   Unlit MeshBasicMaterial only (no lights, no addons, no imports). Attaches LaneFour.World3D.
+   Needs core.js, geom.js and assets3d.js loaded first, and a DOM (textures are canvases).
+
+   const world = LaneFour.World3D.build(THREE, { race, tier, reduceMotion, anisotropy })
+     race          LaneFour.Race (distance and hurdles drive the geometry; at most 24 hurdles)
+     tier          0..3, an index into LaneFour.Geom.TIERS (default 0)
+     reduceMotion  boolean; update(ctx) re-reads ctx.reduceMotion every frame
+     anisotropy    renderer.capabilities.getMaxAnisotropy(); textures use min(4, it)
+
+   world.root      THREE.Group. Add it to the scene once. Race space: X = race x, Y = up,
+                   Z = minus race z (infield on -Z, lane k centre at Z = (k - 4) * 1.22).
+                   Static: root and its meshes never move. The chevron sets stay hidden until
+                   the first update(), so call update() once before renderer.compile().
+   world.sky       THREE.Group inside root: sky dome plus star points. update() copies the
+                   camera position onto it. Do not add it to the scene again.
+   world.update(ctx)  once per frame, ctx = { race, t, dt, camera, reduceMotion, phase }
+                   (t seconds, dt clamped seconds, camera a PerspectiveCamera of which only the
+                   position is read, phase the app phase: SQUAT cues hide when 'finished').
+                   Creates no objects, arrays or closures per call (sampled at about 5 bytes per
+                   call of V8 number boxing, 0.6 us on a desktop). Calls setRace() itself when
+                   ctx.race is a new object, and snaps its caches and the cheer flash when race x
+                   drops by more than 1 m.
+   world.setRace(race)  rebuilds only what depends on distance or hurdles (ground, stands,
+                   boards, paint, labels, gantry, LED board, floodlights, instance counts) and
+                   disposes the old BufferGeometry. Textures and materials persist.
+   world.setTier(n)  hides the sky stars and every additive glow (star glow, floodlight glow)
+                   at T2+, and scales the sky dome to 0.85 * tier.far so a short far plane
+                   never clips it. Returns the tier. The scene still sets camera.far and
+                   scene.fog from tier.far, tier.fogNear and tier.fogFar.
+   world.cheer(kind)  'clear' flashes the stands to 0.6, 'star' and 'finish' to 1.0 (never
+                   lowers a stronger flash); other kinds are ignored. Decays with tau 0.5 s.
+   world.rebake()  redraws the glyph atlas and LED board; runs by itself when the fonts load.
+   world.glowTexture  opaque greyscale radial gradient for additive blending, shared so the
+                   runner's charge glow needs no texture of its own.
+   world.stats()   { drawCalls, triangles, geometries, textures, textureMB, tier } of what is visible.
+   world.dispose() frees geometry, materials and textures and removes root from its parent.
+
+   Fog: the scene sets THREE.Fog(0x1b2f5c, near, far); sky and glows opt out (fog: false).
+   Colour: textures are SRGBColorSpace (the glyph atlas is a linear alpha map) and vertex colours
+   come from new THREE.Color(hex), so hex values match the HUD and the 2D renderer. */
+(function (root) {
+  'use strict';
+  const LF = root.LaneFour;
+  if (!LF || !LF.Geom || !LF.Assets3D) throw new Error('world3d.js needs core.js, geom.js and assets3d.js loaded first');
+  const { clamp } = LF;
+  const { laneZ, tipAngle, farScale, TIERS } = LF.Geom;
+  const A = LF.Assets3D;
+  const { Mesher, AMBER, ATLAS } = A;
+
+  const X0 = -14; // the ground starts this far behind the start line
+  const END = 100; // ... and runs this far past the finish, which the far fog hides
+  const ZA = -4.27; // inside kerb (three Z)
+  const ZB = 5.49; // outside edge of lane 8
+  const STRETCH = 1.6; // ground decals are 1.6x longer along X so they read at a shallow pitch
+  const MPP_DIGIT = 0.0083; // natural metres per atlas pixel: a lane digit is about 0.6 m tall
+  const MPP_LABEL = 0.0056; // a 50 m label about 0.33 m tall
+  const MAX_HURDLES = 24; // chevron change detection packs hurdle states into one 24-bit mask
+
+  function build(THREE, opts) {
+    const T = THREE;
+    const o = opts || {};
+    let race = o.race;
+    if (!race || !race.hurdles) throw new Error('World3D.build needs opts.race');
+    const aniso = clamp(o.anisotropy || 1, 1, 4);
+    let reduce = !!o.reduceMotion;
+    let tier = TIERS[clamp(o.tier | 0, 0, TIERS.length - 1)];
+    let disposed = false;
+    const rgb = (hex) => A.rgb(T, hex);
+
+    // ---- textures
+    const texList = [];
+    function makeTex(w, h, draw, linear) {
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      draw(c.getContext('2d'));
+      const t = new T.CanvasTexture(c);
+      if (!linear) t.colorSpace = T.SRGBColorSpace;
+      texList.push(t);
+      return t;
+    }
+    const tTrack = makeTex(512, 128, A.painters.track);
+    tTrack.wrapT = T.RepeatWrapping;
+    const tGrass = makeTex(64, 256, A.painters.grass);
+    tGrass.wrapT = T.RepeatWrapping;
+    const tAtlas = makeTex(ATLAS.w, ATLAS.h, () => {}, true);
+    const tCrowd = makeTex(512, 256, A.painters.crowd);
+    tCrowd.wrapS = T.RepeatWrapping;
+    const tBoards = makeTex(256, 64, A.painters.boards);
+    tBoards.wrapS = T.RepeatWrapping;
+    const tLed = makeTex(512, 128, () => {});
+    const tGlow = makeTex(128, 128, A.painters.glow);
+    for (const t of [tTrack, tGrass, tAtlas, tCrowd, tBoards]) t.anisotropy = aniso;
+
+    // ---- materials (the track first, so it draws before the grass beneath it)
+    const std = (p) => new T.MeshBasicMaterial(p);
+    const decal = { transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 };
+    const glow = { transparent: true, blending: T.AdditiveBlending, depthWrite: false, fog: false };
+    const mTrack = std({ map: tTrack });
+    const mGrass = std({ map: tGrass });
+    const mPaint = std({ vertexColors: true, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+    const mGlyph = std({ alphaMap: tAtlas, vertexColors: true, ...decal });
+    const mChevIdle = std({ color: AMBER, opacity: 0.6, ...decal });
+    const mChevAct = std({ color: AMBER, opacity: 0.6, ...decal });
+    const mCrowd = std({ map: tCrowd });
+    const mBoards = std({ map: tBoards });
+    const mPole = std({ color: '#0f1936' });
+    const mVert = std({ vertexColors: true }); // gantry, hurdles, floodlight heads
+    const mFlood = std({ map: tGlow, color: '#ffecbe', opacity: 0.5, ...glow });
+    const mLed = std({ map: tLed });
+    const mStar = std({ color: AMBER });
+    const mStarGlow = std({ map: tGlow, color: AMBER, opacity: 0.45, ...glow });
+
+    // ---- scene graph: static parts (geometry swapped by setRace) and instanced sets
+    const rootG = new T.Group();
+    const parts = {};
+    const I = {};
+    function part(name, mat, order) {
+      const m = new T.Mesh(new T.BufferGeometry(), mat);
+      m.frustumCulled = false;
+      m.matrixAutoUpdate = false;
+      m.renderOrder = order || 0;
+      rootG.add(m);
+      parts[name] = m;
+    }
+    function swap(name, geo) {
+      const old = parts[name].geometry;
+      parts[name].geometry = geo;
+      old.dispose();
+    }
+    function inst(name, geo, mat, n, order) {
+      let m = I[name];
+      if (m && m.instanceMatrix.count >= n) return m;
+      if (m) { rootG.remove(m); m.dispose(); }
+      m = I[name] = new T.InstancedMesh(geo, mat, Math.max(n, 12));
+      m.instanceMatrix.setUsage(T.DynamicDrawUsage);
+      m.frustumCulled = false;
+      m.matrixAutoUpdate = false;
+      m.renderOrder = order || 0;
+      m.count = 0;
+      m.visible = false;
+      rootG.add(m);
+      return m;
+    }
+
+    // ---- sky: a camera-following group (dome plus stars)
+    const skyG = new T.Group();
+    rootG.add(skyG);
+    const skyMesh = new T.Mesh(A.geo.skyDome(T), std({ vertexColors: true, side: T.BackSide, fog: false, depthWrite: false }));
+    skyMesh.renderOrder = -10;
+    skyMesh.frustumCulled = false;
+    const skyStars = new T.Points(A.geo.skyStars(T), new T.PointsMaterial({ size: 2, sizeAttenuation: false, vertexColors: true, fog: false, depthWrite: false }));
+    skyStars.renderOrder = -9;
+    skyStars.frustumCulled = false;
+    skyG.add(skyMesh, skyStars);
+
+    // ---- fixed geometry
+    const gChevron = A.geo.chevron(T), gHurdle = A.geo.hurdle(T), gStar = A.geo.star(T), gHead = A.geo.head(T);
+    const gStarGlow = A.geo.glowPlane(T, 1.04), gFloodGlow = A.geo.glowPlane(T, 16), gPole = new T.BoxGeometry(0.45, 14, 0.45).translate(0, 7, 0);
+
+    // ---- distance dependent geometry
+    const groundGeo = (x1, za, zb, y, vlen) => { // u across the track, v = x / vlen
+      const m = new Mesher(false, true);
+      m.quad([X0, y, za], [X0, y, zb], [x1, y, zb], [x1, y, za], [0, 1, 0], null, [[0, X0 / vlen], [1, X0 / vlen], [1, x1 / vlen], [0, x1 / vlen]]);
+      return m.geometry(T);
+    };
+    // A raked stand (Z 7.6, Y 1.0 up to Z 19, Y 8.5) and a 1 m perimeter board (Z 7.3) on each side.
+    const sideGeo = (x1, stand) => {
+      const m = new Mesher(false, true), len = stand ? 24 : 6;
+      for (const s of [-1, 1]) {
+        const a = stand ? [7.6 * s, 1, 19 * s, 8.5] : [7.3 * s, 0, 7.3 * s, 1]; // z0, y0, z1, y1
+        m.quad([X0, a[1], a[0]], [x1, a[1], a[0]], [x1, a[3], a[2]], [X0, a[3], a[2]], [0, stand ? 1 : 0, -s],
+          null, [[X0 / len, 0], [x1 / len, 0], [x1 / len, 1], [X0 / len, 1]]);
+      }
+      return m.geometry(T);
+    };
+    const paintGeo = (r) => {
+      const m = new Mesher(true, false);
+      const line = rgb('#f4f1e8'), tick = new T.Color('#f4f1e8').lerp(new T.Color('#c4472d'), 0.45), mark = rgb('#3fbf6a');
+      const rect = (xa, xb, za, zb, c) => m.quad([xa, 0.005, za], [xa, 0.005, zb], [xb, 0.005, zb], [xb, 0.005, za], [0, 1, 0], c);
+      rect(-0.03, 0.03, ZA, ZB, line);
+      rect(r.distance - 0.06, r.distance + 0.06, ZA, ZB, line);
+      for (let k = 10; k < r.distance; k += 10) rect(k - 0.03, k + 0.03, 0.38, 0.68, [tick.r, tick.g, tick.b]);
+      for (const h of r.hurdles) { rect(h.x - 0.06, h.x + 0.06, 0.58, 0.82, mark); rect(h.x - 0.06, h.x + 0.06, -0.82, -0.58, mark); }
+      return m.geometry(T);
+    };
+    const gantryGeo = (d) => { // posts and top rail, 3.05 m tall
+      const m = new Mesher(true, false), c = rgb('#d9dde6');
+      m.box(d, 1.525, -4.75, 0.16, 3.05, 0.16, c);
+      m.box(d, 1.525, 5.95, 0.16, 3.05, 0.16, c);
+      m.box(d, 3.025, 0.6, 0.12, 0.05, 10.86, c);
+      return m.geometry(T);
+    };
+    const ledGeo = (d) => { // 3.6 x 0.9 m board, normal -X, hanging from the rail
+      const m = new Mesher(false, true), x = d - 0.09;
+      m.quad([x, 2.1, -1.2], [x, 2.1, 2.4], [x, 3.0, 2.4], [x, 3.0, -1.2], [-1, 0, 0], null, [[0, 0], [1, 0], [1, 1], [0, 1]]);
+      return m.geometry(T);
+    };
+
+    // Glyph quads lie on the ground: text-right = +Z, text-up = +X, normal +Y.
+    let rects = {};
+    let squatCount = 0;
+    const glyphQuad = (m, key, xc, zc, wz, hx, c) => {
+      const r = rects[key], x0 = xc - hx / 2, x1 = xc + hx / 2, z0 = zc - wz / 2, z1 = zc + wz / 2;
+      const u0 = r.x / ATLAS.w, u1 = (r.x + r.w) / ATLAS.w, v0 = 1 - (r.y + r.h) / ATLAS.h, v1 = 1 - r.y / ATLAS.h;
+      m.quad([x0, 0.01, z0], [x0, 0.01, z1], [x1, 0.01, z1], [x1, 0.01, z0], [0, 1, 0], c, [[u0, v0], [u1, v0], [u1, v1], [u0, v1]]);
+    };
+    function buildLabels() { // lane numbers at both ends, 50 m labels, SQUAT cues for hurdles 0 and 1
+      const r = race, d = r.distance, white = rgb('#f4f1e8');
+      const nums = new Mesher(true, true), sq = new Mesher(true, true);
+      const dig = (key, xc, zc) => glyphQuad(nums, key, xc, zc, rects[key].w * MPP_DIGIT, ATLAS.cell * MPP_DIGIT * STRETCH, white);
+      for (let k = 1; k <= 8; k++) { dig('d' + k, -2.4, laneZ(k)); dig('d' + k, d - 2.4, laneZ(k)); }
+      for (let q = 50; q < d; q += 50) {
+        const key = 'm' + q;
+        if (rects[key]) glyphQuad(nums, key, q + 0.3, 0.22, rects[key].w * MPP_LABEL, ATLAS.cell * MPP_LABEL * STRETCH, white);
+      }
+      squatCount = Math.min(2, r.hurdles.length);
+      for (let i = 0; i < squatCount; i++) glyphQuad(sq, 'sq', r.hurdles[i].x - 6.0, 0, 3.4, 2.4, rgb(AMBER));
+      swap('numbers', nums.geometry(T));
+      swap('squat', sq.geometry(T));
+      squatMask = -1;
+    }
+
+    part('track', mTrack);
+    part('grass', mGrass);
+    part('paint', mPaint);
+    part('stands', mCrowd);
+    part('boards', mBoards);
+    part('gantry', mVert);
+    part('led', mLed);
+    part('numbers', mGlyph, 1);
+    part('squat', mGlyph, 2);
+
+    // ---- per-frame state, preallocated
+    const _m = new T.Matrix4();
+    const hS = new Float64Array(MAX_HURDLES), hA = new Float64Array(MAX_HURDLES), starLive = new Uint8Array(MAX_HURDLES);
+    let chevSig = -1, chevNext = -2, squatMask = -1, ledQ = NaN, ledStr = '0:00.0', flash = 0, lastX = 0;
+
+    function invalidate() { // forget every cached matrix, cue and string; next update redraws all
+      hS.fill(NaN);
+      hA.fill(NaN);
+      starLive.fill(255);
+      chevSig = -1;
+      squatMask = -1;
+      ledQ = NaN;
+      flash = 0;
+      lastX = race.x;
+    }
+
+    function bake() {
+      rects = A.bakeAtlas(tAtlas.image.getContext('2d'));
+      tAtlas.needsUpdate = true;
+    }
+    function redrawLed(str) {
+      ledStr = str;
+      A.drawLed(tLed.image.getContext('2d'), str);
+      tLed.needsUpdate = true;
+    }
+
+    function setRace(r) {
+      const d = r.distance, n = r.hurdles.length;
+      if (n > MAX_HURDLES) throw new Error('World3D supports at most ' + MAX_HURDLES + ' hurdles');
+      race = r;
+      swap('track', groundGeo(d + END, ZA, ZB, 0, 4));
+      swap('grass', groundGeo(d + END, -7.3, 7.3, -0.02, 8));
+      swap('stands', sideGeo(d + END, true));
+      swap('boards', sideGeo(d + END, false));
+      swap('paint', paintGeo(r));
+      swap('gantry', gantryGeo(d));
+      swap('led', ledGeo(d));
+      buildLabels();
+      redrawLed('0:00.0');
+      const hm = inst('hurdle', gHurdle, mVert, n, 3);
+      const sm = inst('star', gStar, mStar, n, 4);
+      const gm = inst('starGlow', gStarGlow, mStarGlow, n, 6);
+      inst('chevIdle', gChevron, mChevIdle, 3 * n, 2);
+      inst('chevAct', gChevron, mChevAct, 3, 2);
+      for (const m of [hm, sm, gm]) { m.count = n; m.visible = n > 0; }
+      gm.visible = n > 0 && tier.glows;
+      // floodlights every 60 m on both sides, the heads turned toward the track
+      const per = Math.floor((d + END) / 60) + 1, cnt = per * 2;
+      const pm = inst('pole', gPole, mPole, cnt, 0), hd = inst('head', gHead, mVert, cnt, 0), fg = inst('flood', gFloodGlow, mFlood, cnt, 7);
+      for (let s = 0; s < 2; s++) {
+        for (let i = 0; i < per; i++) {
+          const x = i * 60, z = s ? 9 : -9, k = s * per + i, f = s ? -1 : 1;
+          pm.setMatrixAt(k, _m.set(1, 0, 0, x, 0, 1, 0, 0, 0, 0, 1, z, 0, 0, 0, 1));
+          hd.setMatrixAt(k, _m.set(f, 0, 0, x, 0, 1, 0, 14.2, 0, 0, f, z, 0, 0, 0, 1));
+          fg.setMatrixAt(k, _m.set(1, 0, 0, x, 0, 1, 0, 14.2, 0, 0, 1, z, 0, 0, 0, 1));
+        }
+      }
+      for (const m of [pm, hd, fg]) { m.count = cnt; m.visible = true; m.instanceMatrix.needsUpdate = true; }
+      fg.visible = tier.glows;
+      invalidate();
+    }
+
+    function setTier(n) {
+      tier = TIERS[clamp(n | 0, 0, TIERS.length - 1)];
+      skyStars.visible = tier.stars;
+      skyMesh.scale.setScalar(Math.min(1, (tier.far * 0.85) / 100));
+      skyStars.scale.copy(skyMesh.scale);
+      if (I.flood) I.flood.visible = tier.glows;
+      if (I.starGlow) I.starGlow.visible = tier.glows && race.hurdles.length > 0;
+      return tier;
+    }
+
+    // ---- per-frame updates: scratch matrix, typed arrays and indexed loops only
+    function updateHurdles(r) {
+      const hs = r.hurdles, mesh = I.hurdle;
+      let dirty = false;
+      for (let i = 0; i < hs.length; i++) {
+        const h = hs[i];
+        const s = h.state === 'up' ? farScale(h.x - r.x) : 1;
+        const a = tipAngle(h);
+        if (s === hS[i] && a === hA[i]) continue;
+        hS[i] = s;
+        hA[i] = a;
+        const c = Math.cos(a) * s, sn = Math.sin(a) * s; // T(x) * Rz(-a) * S(s): scaled about the base, tipped forward
+        mesh.setMatrixAt(i, _m.set(c, sn, 0, h.x, -sn, c, 0, 0, 0, 0, s, 0, 0, 0, 0, 1));
+        dirty = true;
+      }
+      if (dirty) mesh.instanceMatrix.needsUpdate = true;
+    }
+
+    function updateStars(r, t, cam) {
+      const hs = r.hurdles, ms = I.star, mg = I.starGlow;
+      const cx = cam ? cam.position.x : r.x - 6, cy = cam ? cam.position.y : 3.6, cz = cam ? cam.position.z : 0;
+      let any = false;
+      for (let i = 0; i < hs.length; i++) {
+        const h = hs[i];
+        if (h.state !== 'up') {
+          if (starLive[i] === 0) continue;
+          starLive[i] = 0;
+          _m.set(0, 0, 0, h.x, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1);
+        } else {
+          starLive[i] = 1;
+          const y = 2.45 + (reduce ? 0 : Math.sin(3 * t + h.x) * 0.06);
+          const dx = h.x - cx, dy = y - cy;
+          const sc = clamp(Math.sqrt(dx * dx + dy * dy + cz * cz) / 14, 1, 2.2); // bigger far away, so it stays readable
+          const ang = reduce ? 0 : 0.8 * t;
+          const c = Math.cos(ang) * sc, s = Math.sin(ang) * sc;
+          _m.set(sc, 0, 0, h.x, 0, c, -s, y, 0, s, c, 0, 0, 0, 0, 1);
+        }
+        ms.setMatrixAt(i, _m);
+        mg.setMatrixAt(i, _m);
+        any = true;
+      }
+      if (any) { ms.instanceMatrix.needsUpdate = true; mg.instanceMatrix.needsUpdate = true; }
+    }
+
+    function updateChevrons(r, t) {
+      const hs = r.hurdles, idle = I.chevIdle, act = I.chevAct;
+      let next = -1, mask = 0;
+      for (let i = 0; i < hs.length; i++) {
+        if (hs[i].state !== 'up') continue;
+        mask |= 1 << i;
+        if (next < 0 && hs[i].x >= r.x) next = i;
+      }
+      if (mask !== chevSig || next !== chevNext) { // only when the next hurdle or a hurdle state changed
+        chevSig = mask;
+        chevNext = next;
+        let n = 0;
+        for (let i = 0; i < hs.length; i++) {
+          if (!(mask & (1 << i)) || i === next) continue;
+          for (let k = 0; k < 3; k++) idle.setMatrixAt(n++, _m.set(1, 0, 0, hs[i].x - 3.6 + 0.9 * k, 0, 1, 0, 0.012, 0, 0, 1, 0, 0, 0, 0, 1));
+        }
+        idle.count = n;
+        idle.visible = n > 0;
+        idle.instanceMatrix.needsUpdate = true;
+        for (let k = 0; k < 3 && next >= 0; k++) act.setMatrixAt(k, _m.set(1, 0, 0, hs[next].x - 3.6 + 0.9 * k, 0, 1, 0, 0.012, 0, 0, 1, 0, 0, 0, 0, 1));
+        act.count = next >= 0 ? 3 : 0;
+        act.visible = next >= 0;
+        act.instanceMatrix.needsUpdate = true;
+      }
+      if (next >= 0) {
+        const d = hs[next].x - r.x;
+        mChevAct.opacity = d > 0 && d <= 4.4 && !reduce ? 0.55 + 0.4 * Math.sin(14 * t) : 0.6;
+      }
+    }
+
+    function updateSquat(r, phase) {
+      const hs = r.hurdles;
+      let mask = 0;
+      if (!r.finished && phase !== 'finished') {
+        for (let i = 0; i < squatCount; i++) if (hs[i].state === 'up') mask |= 1 << i;
+      }
+      if (mask === squatMask) return;
+      squatMask = mask;
+      const m = parts.squat;
+      m.visible = mask !== 0;
+      m.geometry.setDrawRange(mask === 2 ? 6 : 0, mask === 3 ? 12 : 6); // quad i is indices 6i .. 6i+5
+    }
+
+    function updateLed(r) {
+      if (!(r.finished || r.distance - r.x < 70)) return;
+      const tm = r.finished ? r.finishTime : r.time;
+      const q = Math.floor(tm * 10);
+      if (q === ledQ) return;
+      ledQ = q;
+      redrawLed(LF.formatTime(tm));
+    }
+
+    function update(ctx) {
+      const r = ctx.race || race;
+      if (r !== race) setRace(r);
+      else if (r.x < lastX - 1) invalidate();
+      lastX = r.x;
+      reduce = !!ctx.reduceMotion;
+      if (ctx.camera) skyG.position.copy(ctx.camera.position);
+      updateHurdles(r);
+      updateStars(r, ctx.t, ctx.camera);
+      updateChevrons(r, ctx.t);
+      updateSquat(r, ctx.phase);
+      updateLed(r);
+      flash = flash > 0.002 ? flash * Math.exp(-(ctx.dt > 0 ? ctx.dt : 0) / 0.5) : 0;
+      mCrowd.color.setScalar(1 + 0.35 * flash * (reduce ? 0.4 : 1));
+    }
+
+    function cheer(kind) {
+      const v = kind === 'clear' ? 0.6 : kind === 'star' || kind === 'finish' ? 1 : 0;
+      if (v > flash) flash = v;
+    }
+
+    function rebake() {
+      if (disposed) return;
+      bake();
+      buildLabels();
+      redrawLed(ledStr);
+    }
+
+    function stats() {
+      let calls = 0, tris = 0, texBytes = 0;
+      const geos = new Set();
+      rootG.traverseVisible((ob) => {
+        if (!ob.isMesh && !ob.isPoints) return;
+        const g = ob.geometry;
+        geos.add(g.uuid);
+        calls++;
+        if (!ob.isMesh) return;
+        const n = Math.min(g.index ? g.index.count : g.attributes.position.count, g.drawRange.count);
+        tris += (n / 3) * (ob.isInstancedMesh ? ob.count : 1);
+      });
+      for (const t of texList) texBytes += t.image.width * t.image.height * 4 * 1.34; // with mipmaps
+      return { drawCalls: calls, triangles: Math.round(tris), geometries: geos.size, textures: texList.length, textureMB: +(texBytes / 1048576).toFixed(2), tier: tier.name };
+    }
+
+    function dispose() {
+      disposed = true;
+      if (rootG.parent) rootG.parent.remove(rootG);
+      rootG.traverse((ob) => {
+        if (ob.geometry) ob.geometry.dispose();
+        if (ob.material) ob.material.dispose();
+        if (ob.isInstancedMesh) ob.dispose();
+      });
+      for (const g of [gChevron, gHurdle, gStar, gHead, gStarGlow, gFloodGlow, gPole]) g.dispose();
+      for (const t of texList) t.dispose();
+    }
+
+    // ---- first build now with fallback fonts; re-bake when the real faces arrive (never blocks)
+    bake();
+    setRace(race);
+    setTier(TIERS.indexOf(tier));
+    const fonts = typeof document !== 'undefined' && document.fonts;
+    if (fonts && fonts.load) {
+      for (const spec of ['900 64px "Big Shoulders Display"', '900 64px Doto']) {
+        fonts.load(spec).then((faces) => { if (faces && faces.length) rebake(); }, () => {});
+      }
+    }
+
+    return { root: rootG, sky: skyG, update, setRace, setTier, cheer, rebake, stats, dispose, glowTexture: tGlow };
+  }
+
+  Object.assign(LF, { World3D: { build } });
 })(typeof window !== 'undefined' ? window : globalThis);
 
 </script>
