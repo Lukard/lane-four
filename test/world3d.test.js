@@ -242,3 +242,47 @@ test('Z is mirrored once: lane 1 is on -Z, lane 8 on +Z, the infield stand rises
     assert.ok(n.y > 0 && n.z * side < 0, 'stand on side ' + side + ' faces up and toward the track: ' + n.toArray());
   }
 }));
+
+test('no material is shared between an InstancedMesh and a plain Mesh (three re-derives the program every frame it flips)', withWorld(({ world }) => {
+  const kinds = new Map();
+  world.root.traverse((o) => {
+    if (!o.material || !(o.isMesh || o.isPoints)) return;
+    const k = kinds.get(o.material) || new Set();
+    k.add(o.isInstancedMesh ? 'instanced' : 'plain');
+    kinds.set(o.material, k);
+  });
+  assert.ok(kinds.size >= 10);
+  for (const [m, k] of kinds) assert.equal(k.size, 1, 'material ' + m.type + ' (color ' + m.color.getHexString() + ') is used by both');
+}));
+
+test('after the finish the LED board rolls up into the rail and the gantry lifts away as the camera nears it, and only then', withWorld(({ world, ctx, race, camera }) => {
+  const is = (m) => m.isMesh && !m.isInstancedMesh;
+  const led = world.root.children.find((m) => is(m) && m.material.map && m.geometry.attributes.position.count === 4 && m.geometry.attributes.position.getY(0) > 2);
+  const gantry = world.root.children.find((m) => is(m) && m.material.vertexColors && !m.material.polygonOffset);
+  assert.ok(led && gantry, 'found the LED board and the gantry');
+  world.root.updateMatrixWorld();
+  const at = (camX) => { camera.position.set(camX, 3.6, 0); world.update(ctx); return { sy: led.matrix.elements[5], ty: led.matrix.elements[13], led: led.visible, gy: gantry.matrix.elements[13], gantry: gantry.visible }; };
+  const d = race.distance;
+  race.x = d - 3;
+  assert.deepEqual(at(d - 4), { sy: 1, ty: 0, led: true, gy: 0, gantry: true }, 'racing: always whole, however near');
+  assert.deepEqual(at(d - 0.5), { sy: 1, ty: 0, led: true, gy: 0, gantry: true }, 'racing: even right under it');
+  race.finished = true;
+  race.finishTime = 63.2;
+  race.x = d + 2;
+  assert.deepEqual(at(d - 7.2), { sy: 1, ty: 0, led: true, gy: 0, gantry: true }, 'finished, but the camera is still far: whole');
+  const half = at(d - 0.09 - 2.5 - 2.3);
+  assert.ok(near(half.sy, 0.5) && near(half.ty, 1.5) && half.led && half.gy === 0 && half.gantry, 'half way: the board is squashed toward its top edge (y = 3.0), the gantry has not moved');
+  assert.ok(near(led.matrix.elements[5] * 3.0 + led.matrix.elements[13], 3.0), 'the top edge stays on the rail');
+  const near2 = at(d - 2.5 - 0.09);
+  assert.ok(near(near2.sy, 0) && !near2.led && near2.gantry && near(near2.gy, 14 * (1 - (2.5 + 0.09 - 1) / 3), 1e-9), 'board rolled up and hidden, the gantry already lifting');
+  const mid = at(d - 3.5);
+  assert.ok(near(mid.sy, (3.5 - 0.09 - 2.5) / 4.6, 1e-9) && mid.led && near(mid.ty, 3 * (1 - mid.sy) + 14 * (1 - 2.5 / 3), 1e-9) && near(mid.gy, 14 * (1 - 2.5 / 3), 1e-9), 'the board is lifted with the gantry while it is still rolling up');
+  world.root.updateMatrixWorld();
+  assert.ok(near(gantry.matrixWorld.elements[13], mid.gy, 1e-9) && near(led.matrixWorld.elements[13], mid.ty, 1e-9), 'the world matrices follow');
+  const rest = at(d - 1.5);
+  assert.ok(near(rest.gy, 14 * (1 - 0.5 / 3), 1e-9) && rest.gantry && !rest.led, 'a camera resting 1.5 m short: the rail is lifted 11.7 m overhead');
+  assert.deepEqual([at(d - 1).gantry, at(d - 1).led, at(d + 5).gantry, at(d + 5).led], [false, false, false, false], 'gone at 1 m and beyond');
+  race.finished = false; // a restart on the same race object
+  race.x = 0;
+  assert.deepEqual(at(-6), { sy: 1, ty: 0, led: true, gy: 0, gantry: true }, 'whole again');
+}));

@@ -18,7 +18,10 @@
                    (t seconds, dt clamped seconds, camera a PerspectiveCamera of which only the
                    position is read, phase the app phase: SQUAT cues hide when 'finished').
                    Creates no objects, arrays or closures per call (sampled at about 5 bytes per
-                   call of V8 number boxing, 0.6 us on a desktop). Calls setRace() itself when
+                   call of V8 number boxing, 0.6 us on a desktop). Once race.finished, the LED board rolls
+                   up into the rail as ctx.camera nears the gantry (whole at 7.1 m, gone at 2.5 m) and the
+                   gantry lifts away overhead inside 4 m (gone at 1 m), so a camera that comes to rest next
+                   to it is not walled off. Calls setRace() itself when
                    ctx.race is a new object, and snaps its caches and the cheer flash when race x
                    drops by more than 1 m.
    world.setRace(race)  rebuilds only what depends on distance or hurdles (ground, stands,
@@ -106,7 +109,8 @@
     const mCrowd = std({ map: tCrowd });
     const mBoards = std({ map: tBoards });
     const mPole = std({ color: '#0f1936' });
-    const mVert = std({ vertexColors: true }); // gantry, hurdles, floodlight heads
+    const mVert = std({ vertexColors: true }); // hurdles, floodlight heads (both instanced)
+    const mGantry = std({ vertexColors: true }); // not shared with an InstancedMesh: three re-derives the program every time a material flips between the two
     const mFlood = std({ map: tGlow, color: '#ffecbe', opacity: 0.5, ...glow });
     const mLed = std({ map: tLed });
     const mStar = std({ color: AMBER });
@@ -227,7 +231,7 @@
     part('paint', mPaint);
     part('stands', mCrowd);
     part('boards', mBoards);
-    part('gantry', mVert);
+    part('gantry', mGantry);
     part('led', mLed);
     part('numbers', mGlyph, 1);
     part('squat', mGlyph, 2);
@@ -235,7 +239,7 @@
     // ---- per-frame state, preallocated
     const _m = new T.Matrix4();
     const hS = new Float64Array(MAX_HURDLES), hA = new Float64Array(MAX_HURDLES), starLive = new Uint8Array(MAX_HURDLES);
-    let chevSig = -1, chevNext = -2, squatMask = -1, ledQ = NaN, ledStr = '0:00.0', flash = 0, lastX = 0;
+    let chevSig = -1, chevNext = -2, squatMask = -1, ledQ = NaN, ledStr = '0:00.0', ledK = 1, gantryG = 1, flash = 0, lastX = 0;
 
     function invalidate() { // forget every cached matrix, cue and string; next update redraws all
       hS.fill(NaN);
@@ -400,6 +404,24 @@
       redrawLed(LF.formatTime(tm));
     }
 
+    // Once the runner is through, the chase camera coasts up to the gantry and can come to rest right
+    // before it. The LED board (below the camera, so in view) would wall the picture off, and the rail
+    // would cross it as a band. So after the finish the board rolls up into the rail as the camera nears
+    // it (whole 7.1 m away, gone at 2.5 m), and the whole gantry lifts away overhead inside 4 m (gone at 1 m).
+    function updateGantryRoll(r, cam) {
+      const d = r.finished && cam ? r.distance - cam.position.x : 99;
+      const k = clamp((d - 0.09 - 2.5) / 4.6, 0, 1), g = clamp((d - 1) / 3, 0, 1);
+      if (k === ledK && g === gantryG) return;
+      ledK = k;
+      gantryG = g;
+      const lift = 14 * (1 - g);
+      const led = parts.led, gantry = parts.gantry;
+      led.visible = k > 0; // k > 0 means more than 2.6 m away, so the gantry has not gone
+      led.matrix.set(1, 0, 0, 0, 0, k, 0, 3 * (1 - k) + lift, 0, 0, 1, 0, 0, 0, 0, 1); // squash toward the top edge (y = 3.0), then lift
+      gantry.visible = g > 0;
+      gantry.matrix.elements[13] = lift;
+    }
+
     function update(ctx) {
       const r = ctx.race || race;
       if (r !== race) setRace(r);
@@ -412,6 +434,7 @@
       updateChevrons(r, ctx.t);
       updateSquat(r, ctx.phase);
       updateLed(r);
+      updateGantryRoll(r, ctx.camera);
       flash = flash > 0.002 ? flash * Math.exp(-(ctx.dt > 0 ? ctx.dt : 0) / 0.5) : 0;
       mCrowd.color.setScalar(1 + 0.35 * flash * (reduce ? 0.4 : 1));
     }

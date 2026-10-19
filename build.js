@@ -13,6 +13,7 @@ const PARTS = {
   GEOM: 'geom.js',
   ASSETS3D: 'assets3d.js',
   WORLD3D: 'world3d.js',
+  ACTORS3D: 'actors3d.js',
   SCENE3D: 'scene3d.js',
   APP: 'app.js',
 };

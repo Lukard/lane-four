@@ -13,7 +13,7 @@ const html = build();
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const VERSION = pkg.devDependencies.three;
 
-const SOURCES = ['style.css', 'core.js', 'geom.js', 'assets3d.js', 'world3d.js', 'scene3d.js', 'app.js', 'page.html'];
+const SOURCES = ['style.css', 'core.js', 'geom.js', 'assets3d.js', 'world3d.js', 'actors3d.js', 'scene3d.js', 'app.js', 'page.html'];
 
 test('build() returns the page and does not write docs/index.html', () => {
   assert.equal(typeof html, 'string');
@@ -24,7 +24,7 @@ test('build() returns the page and does not write docs/index.html', () => {
 });
 
 test('no marker and no version placeholder is left in the built page', () => {
-  for (const m of ['STYLE', 'CORE', 'GEOM', 'ASSETS3D', 'WORLD3D', 'SCENE3D', 'APP']) {
+  for (const m of ['STYLE', 'CORE', 'GEOM', 'ASSETS3D', 'WORLD3D', 'ACTORS3D', 'SCENE3D', 'APP']) {
     assert.ok(!html.includes('/*' + m + '*/'), 'leftover /*' + m + '*/');
   }
   assert.ok(!html.includes('__THREE_VERSION__'));
@@ -40,13 +40,13 @@ test('no source file can close its inline script early', () => {
   const opens = html.match(/<script\b/g).length;
   const closes = html.match(/<\/script>/g).length;
   assert.equal(opens, closes);
-  assert.equal(opens, 7, 'import map, core, geom, assets3d, world3d, scene3d, app');
+  assert.equal(opens, 8, 'import map, core, geom, assets3d, world3d, actors3d, scene3d, app');
 });
 
 test('scripts are inlined in order between the import map and the end of the body', () => {
   const blocks = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)].map((m) => ({ attrs: m[1], body: m[2] }));
   assert.equal(blocks[0].attrs.trim(), 'type="importmap"');
-  const marks = ['Lane Four core:', 'Lane Four geometry:', 'Lane Four 3D assets:', 'Lane Four 3D world:', 'Lane Four 3D scene:', 'Lane Four app:'];
+  const marks = ['Lane Four core:', 'Lane Four geometry:', 'Lane Four 3D assets:', 'Lane Four 3D world:', 'Lane Four 3D actors:', 'Lane Four 3D scene:', 'Lane Four app:'];
   marks.forEach((mark, i) => {
     assert.ok(blocks[i + 1].body.includes(mark), 'script ' + (i + 1) + ' should be ' + mark);
     assert.equal(blocks[i + 1].attrs.trim(), '');

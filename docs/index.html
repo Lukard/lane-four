@@ -1649,7 +1649,10 @@ kbd {
                    (t seconds, dt clamped seconds, camera a PerspectiveCamera of which only the
                    position is read, phase the app phase: SQUAT cues hide when 'finished').
                    Creates no objects, arrays or closures per call (sampled at about 5 bytes per
-                   call of V8 number boxing, 0.6 us on a desktop). Calls setRace() itself when
+                   call of V8 number boxing, 0.6 us on a desktop). Once race.finished, the LED board rolls
+                   up into the rail as ctx.camera nears the gantry (whole at 7.1 m, gone at 2.5 m) and the
+                   gantry lifts away overhead inside 4 m (gone at 1 m), so a camera that comes to rest next
+                   to it is not walled off. Calls setRace() itself when
                    ctx.race is a new object, and snaps its caches and the cheer flash when race x
                    drops by more than 1 m.
    world.setRace(race)  rebuilds only what depends on distance or hurdles (ground, stands,
@@ -1737,7 +1740,8 @@ kbd {
     const mCrowd = std({ map: tCrowd });
     const mBoards = std({ map: tBoards });
     const mPole = std({ color: '#0f1936' });
-    const mVert = std({ vertexColors: true }); // gantry, hurdles, floodlight heads
+    const mVert = std({ vertexColors: true }); // hurdles, floodlight heads (both instanced)
+    const mGantry = std({ vertexColors: true }); // not shared with an InstancedMesh: three re-derives the program every time a material flips between the two
     const mFlood = std({ map: tGlow, color: '#ffecbe', opacity: 0.5, ...glow });
     const mLed = std({ map: tLed });
     const mStar = std({ color: AMBER });
@@ -1858,7 +1862,7 @@ kbd {
     part('paint', mPaint);
     part('stands', mCrowd);
     part('boards', mBoards);
-    part('gantry', mVert);
+    part('gantry', mGantry);
     part('led', mLed);
     part('numbers', mGlyph, 1);
     part('squat', mGlyph, 2);
@@ -1866,7 +1870,7 @@ kbd {
     // ---- per-frame state, preallocated
     const _m = new T.Matrix4();
     const hS = new Float64Array(MAX_HURDLES), hA = new Float64Array(MAX_HURDLES), starLive = new Uint8Array(MAX_HURDLES);
-    let chevSig = -1, chevNext = -2, squatMask = -1, ledQ = NaN, ledStr = '0:00.0', flash = 0, lastX = 0;
+    let chevSig = -1, chevNext = -2, squatMask = -1, ledQ = NaN, ledStr = '0:00.0', ledK = 1, gantryG = 1, flash = 0, lastX = 0;
 
     function invalidate() { // forget every cached matrix, cue and string; next update redraws all
       hS.fill(NaN);
@@ -2031,6 +2035,24 @@ kbd {
       redrawLed(LF.formatTime(tm));
     }
 
+    // Once the runner is through, the chase camera coasts up to the gantry and can come to rest right
+    // before it. The LED board (below the camera, so in view) would wall the picture off, and the rail
+    // would cross it as a band. So after the finish the board rolls up into the rail as the camera nears
+    // it (whole 7.1 m away, gone at 2.5 m), and the whole gantry lifts away overhead inside 4 m (gone at 1 m).
+    function updateGantryRoll(r, cam) {
+      const d = r.finished && cam ? r.distance - cam.position.x : 99;
+      const k = clamp((d - 0.09 - 2.5) / 4.6, 0, 1), g = clamp((d - 1) / 3, 0, 1);
+      if (k === ledK && g === gantryG) return;
+      ledK = k;
+      gantryG = g;
+      const lift = 14 * (1 - g);
+      const led = parts.led, gantry = parts.gantry;
+      led.visible = k > 0; // k > 0 means more than 2.6 m away, so the gantry has not gone
+      led.matrix.set(1, 0, 0, 0, 0, k, 0, 3 * (1 - k) + lift, 0, 0, 1, 0, 0, 0, 0, 1); // squash toward the top edge (y = 3.0), then lift
+      gantry.visible = g > 0;
+      gantry.matrix.elements[13] = lift;
+    }
+
     function update(ctx) {
       const r = ctx.race || race;
       if (r !== race) setRace(r);
@@ -2043,6 +2065,7 @@ kbd {
       updateChevrons(r, ctx.t);
       updateSquat(r, ctx.phase);
       updateLed(r);
+      updateGantryRoll(r, ctx.camera);
       flash = flash > 0.002 ? flash * Math.exp(-(ctx.dt > 0 ? ctx.dt : 0) / 0.5) : 0;
       mCrowd.color.setScalar(1 + 0.35 * flash * (reduce ? 0.4 : 1));
     }
@@ -2106,13 +2129,818 @@ kbd {
 
 </script>
 <script>
-/* Lane Four 3D scene: renderer, chase camera, runner, particles, popups, quality
-   and context loss, built from a THREE namespace passed in. Placeholder: a later
-   stage fills LaneFour.Scene3D. */
+/* Lane Four 3D actors: the runner (instanced bones and joints built from Geom.runnerPose), its
+   shadow and charge glow, the particle points and the pooled DOM popups. Unlit MeshBasicMaterial
+   only. Attaches LaneFour.Actors3D; scene3d.js is the only user. Needs core.js, geom.js and
+   assets3d.js loaded first, and a DOM (the popups are elements).
+
+   const actors = LaneFour.Actors3D.create(THREE, { glowTexture, popLayer, tier, reduceMotion })
+     glowTexture   world.glowTexture (the greyscale radial the charge glow shares with the world)
+     popLayer      the #popLayer element; POOL (6) .pop3d nodes are appended to it
+     tier          0..3 index into Geom.TIERS (particle capacity: 256, 256, 128, 0)
+
+   actors.root           THREE.Group of the runner, shadow, charge glow and particle points
+   actors.update(f)      once per drawn frame; f = { race, av, phase, particles, popups, dt,
+                         reduceMotion, camera } (camera already placed, matrixWorld up to date).
+                         Creates no objects, arrays or closures per call except the popup style
+                         strings while a popup is alive and moving.
+   actors.setView(vfov, W, H, portrait)  after a rig or size change: particle size and popup clamp
+   actors.setTier(n)     particle capacity for the tier
+   actors.snap()         forget eased state (paused-gait easing, popup positions) after a teleport
+   actors.prewarm(on)    show or hide the charge glow by hand (so renderer.compile sees its program)
+   actors.pose           the last pose in metres relative to the runner (after the trail-leg lift), for tests
+   actors.a3             the pose input copy of S.av (with the eased gait), for tests
+   actors.dispose()      frees geometry, materials and popup nodes (the glow texture is the world's)
+
+   Coordinates: three X = race x, Y = up, Z = minus race z. Pose index 0 is the near, bright limb
+   and sits at +Z (legs +0.10 m, arms +0.21 m), index 1 at -Z. */
 (function (root) {
   'use strict';
-  if (!root.LaneFour) throw new Error('scene3d.js needs core.js loaded first');
-  Object.assign(root.LaneFour, { Scene3D: {} });
+  const LF = root.LaneFour;
+  if (!LF || !LF.Geom || !LF.Assets3D) throw new Error('actors3d.js needs core.js, geom.js and assets3d.js loaded first');
+  const { clamp } = LF;
+  const { runnerPose, makePose, approach, TIERS } = LF.Geom;
+  const A = LF.Assets3D;
+
+  const MAXP = 256; // particle capacity at T0 and T1
+  const POOL = 6; // pooled popup nodes
+  const LEG_Z = [0.10, -0.10];
+  const ARM_Z = [0.21, -0.21];
+  const R_LEG = 0.055;
+  const R_ARM = 0.048;
+  const R_FOOT = 0.04;
+  const R_HEAD = 0.125;
+  const NEAR = '#fbf8ef';
+  const FAR = '#c9c4b6';
+
+  function create(THREE, opts) {
+    const T = THREE;
+    const o = opts || {};
+    if (!o.glowTexture || !o.popLayer) throw new Error('Actors3D.create needs opts.glowTexture and opts.popLayer');
+    let tier = TIERS[clamp(o.tier | 0, 0, TIERS.length - 1)];
+    let disposed = false;
+    const rootG = new T.Group();
+
+    // ---- runner: 11 bones (unit cylinders) and 13 joints (spheres), per-instance colour
+    const mBody = new T.MeshBasicMaterial();
+    const gBone = new T.CylinderGeometry(1, 1, 1, 6, 1);
+    const gJoint = new T.SphereGeometry(0.055, 8, 6);
+    const bones = new T.InstancedMesh(gBone, mBody, 11);
+    const joints = new T.InstancedMesh(gJoint, mBody, 13);
+    const cNear = new T.Color(NEAR), cFar = new T.Color(FAR), cTorso = new T.Color(A.AMBER);
+    // bones: thigh x2, shin x2, foot x2, upper arm x2, forearm x2, torso. joints: hip, shoulder,
+    // then knee, ankle, toe, elbow, wrist (a near and a far each), head.
+    for (let i = 0; i < 10; i++) bones.setColorAt(i, i % 2 ? cFar : cNear);
+    bones.setColorAt(10, cTorso);
+    joints.setColorAt(0, cTorso);
+    joints.setColorAt(1, cTorso);
+    for (let i = 2; i < 12; i++) joints.setColorAt(i, i % 2 ? cFar : cNear);
+    joints.setColorAt(12, cNear);
+    for (const m of [bones, joints]) {
+      m.instanceMatrix.setUsage(T.DynamicDrawUsage);
+      m.frustumCulled = false;
+      rootG.add(m);
+    }
+
+    // ---- shadow blob and charge glow
+    const mShadow = new T.MeshBasicMaterial({ color: 0x000000, opacity: 0.3, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 });
+    const gShadow = new T.CircleGeometry(1, 16).rotateX(-Math.PI / 2);
+    const shadow = new T.Mesh(gShadow, mShadow);
+    shadow.position.y = 0.012;
+    shadow.renderOrder = 3;
+    shadow.frustumCulled = false;
+    const mGlow = new T.MeshBasicMaterial({ map: o.glowTexture, color: '#57d98f', opacity: 0.45, transparent: true, blending: T.AdditiveBlending, depthWrite: false, fog: false });
+    const gGlow = A.geo.glowPlane(T, 1.8);
+    const glow = new T.Mesh(gGlow, mGlow);
+    glow.renderOrder = 5;
+    glow.frustumCulled = false;
+    glow.visible = false;
+    rootG.add(shadow, glow);
+
+    // ---- particles: one Points, preallocated buffers. Three's point size ignores the FOV, so the
+    // size is p.size / tan(vfov / 2) (set in setView) times a per-point size attribute.
+    const pPos = new Float32Array(MAXP * 3), pCol = new Float32Array(MAXP * 4), pSize = new Float32Array(MAXP);
+    const gPts = new T.BufferGeometry();
+    const aPos = new T.BufferAttribute(pPos, 3).setUsage(T.DynamicDrawUsage);
+    const aCol = new T.BufferAttribute(pCol, 4).setUsage(T.DynamicDrawUsage);
+    const aSize = new T.BufferAttribute(pSize, 1).setUsage(T.DynamicDrawUsage);
+    gPts.setAttribute('position', aPos);
+    gPts.setAttribute('color', aCol);
+    gPts.setAttribute('psize', aSize);
+    gPts.setDrawRange(0, 0);
+    const mPts = new T.PointsMaterial({ size: 0.1, sizeAttenuation: true, vertexColors: true, transparent: true, depthWrite: false });
+    mPts.onBeforeCompile = (sh) => { // per-point size; if three's shader text ever changes, size stays uniform
+      if (!sh.vertexShader.includes('gl_PointSize = size;')) return;
+      sh.vertexShader = 'attribute float psize;\n' + sh.vertexShader.replace('gl_PointSize = size;', 'gl_PointSize = size * psize;');
+    };
+    const points = new T.Points(gPts, mPts);
+    points.frustumCulled = false;
+    points.renderOrder = 8;
+    rootG.add(points);
+    const colMemo = new Map(); // 'r, g, b' (sRGB 0..255) -> linear [r, g, b]
+    const tmpC = new T.Color();
+    let capacity = tier.particles;
+    let lastN = 0;
+
+    function linear(str) {
+      let c = colMemo.get(str);
+      if (!c) {
+        const p = String(str).split(',');
+        tmpC.setRGB((+p[0] || 0) / 255, (+p[1] || 0) / 255, (+p[2] || 0) / 255, T.SRGBColorSpace);
+        c = [tmpC.r, tmpC.g, tmpC.b];
+        colMemo.set(str, c);
+      }
+      return c;
+    }
+
+    // ---- popups: pooled DOM nodes in #popLayer
+    const nodes = [];
+    for (let i = 0; i < POOL; i++) {
+      const n = document.createElement('div');
+      n.className = 'pop3d';
+      n.hidden = true;
+      o.popLayer.appendChild(n);
+      nodes.push({ el: n, text: '', color: '', x: -9999, y: -9999, op: -1, shown: false });
+    }
+    let W = 1, H = 1, minRow = 0.22;
+
+    // ---- per-frame scratch
+    const P = makePose();
+    const a3 = { phase: 0, target: 0, crouch: 0, air: 0, stumble: 0, gait: 0, charged: false, t: 0 };
+    let gaitE = -1, easing = false; // gaitE < 0: take the live value next frame
+    const _m = new T.Matrix4(), _q = new T.Quaternion(), _p = new T.Vector3(), _s = new T.Vector3(), _d = new T.Vector3();
+    const UP = new T.Vector3(0, 1, 0);
+
+    // World positions of the joints (points 0..12: hip, shoulder, knee x2, ankle x2, toe x2, elbow x2,
+    // wrist x2, head) and the four limb roots (13-14 the hips of each leg at Z +-0.10, 15-16 the shoulders
+    // of each arm at Z +-0.21), as x, y, z triples. Z never changes. Bones and joints read from here by
+    // index, so no number is passed between functions (V8 boxes those).
+    const jp = new Float64Array(17 * 3);
+    jp[13 * 3 + 2] = LEG_Z[0];
+    jp[14 * 3 + 2] = LEG_Z[1];
+    jp[15 * 3 + 2] = ARM_Z[0];
+    jp[16 * 3 + 2] = ARM_Z[1];
+    for (let i = 0; i < 2; i++) {
+      jp[(2 + i) * 3 + 2] = jp[(4 + i) * 3 + 2] = jp[(6 + i) * 3 + 2] = LEG_Z[i];
+      jp[(8 + i) * 3 + 2] = jp[(10 + i) * 3 + 2] = ARM_Z[i];
+    }
+    const B_FROM = Uint8Array.of(13, 14, 2, 3, 4, 5, 15, 16, 8, 9, 0); // thigh x2, shin x2, foot x2, upper arm x2, forearm x2, torso
+    const B_TO = Uint8Array.of(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 1);
+    const B_RX = Float64Array.of(R_LEG, R_LEG, R_LEG, R_LEG, R_FOOT, R_FOOT, R_ARM, R_ARM, R_ARM, R_ARM, 0.11);
+    const B_RZ = Float64Array.of(R_LEG, R_LEG, R_LEG, R_LEG, R_FOOT, R_FOOT, R_ARM, R_ARM, R_ARM, R_ARM, 0.18);
+
+    function bone(i) { // cylinder between two points, radius rx x rz
+      const a = B_FROM[i] * 3, b = B_TO[i] * 3;
+      _d.set(jp[b] - jp[a], jp[b + 1] - jp[a + 1], jp[b + 2] - jp[a + 2]);
+      const len = _d.length();
+      if (len < 1e-6) { _m.makeScale(0, 0, 0); bones.setMatrixAt(i, _m); return; }
+      _q.setFromUnitVectors(UP, _d.multiplyScalar(1 / len));
+      _p.set((jp[a] + jp[b]) / 2, (jp[a + 1] + jp[b + 1]) / 2, (jp[a + 2] + jp[b + 2]) / 2);
+      _s.set(B_RX[i], len, B_RZ[i]);
+      bones.setMatrixAt(i, _m.compose(_p, _q, _s));
+    }
+    function joint(i) { // sphere on point i (the head is the same sphere, scaled)
+      const s = i === 12 ? R_HEAD / 0.055 : 1, k = i * 3;
+      joints.setMatrixAt(i, _m.set(s, 0, 0, jp[k], 0, s, 0, jp[k + 1], 0, 0, s, jp[k + 2], 0, 0, 0, 1));
+    }
+
+    function updateRunner(f) {
+      const r = f.race, av = f.av, dt = f.dt;
+      a3.phase = av.phase;
+      a3.target = av.target;
+      a3.crouch = av.crouch;
+      a3.air = av.air;
+      a3.stumble = av.stumble;
+      a3.charged = av.charged;
+      a3.t = av.t;
+      // S.av is never touched. While paused the gait eases to a stand instead of freezing mid-stride,
+      // and it eases back to the live value on resume.
+      if (gaitE < 0) gaitE = av.gait;
+      if (f.phase === 'paused') { gaitE = approach(gaitE, 0, dt, 0.3); easing = true; }
+      else if (easing) { gaitE = approach(gaitE, av.gait, dt, 0.15); if (Math.abs(gaitE - av.gait) < 0.01) easing = false; }
+      a3.gait = easing ? gaitE : av.gait;
+      if (!easing) gaitE = av.gait;
+      runnerPose(a3, f.reduceMotion, P);
+      if (av.air > 0.5) { // trail leg tucks higher over the board (3D only; the collision rule is unchanged)
+        const l = 0.12 * av.air, leg = P.legs[1];
+        leg.knee.y += l;
+        leg.ankle.y += l;
+        leg.toe.y += l;
+      }
+      const ox = r.x, oy = r.y;
+      jp[0] = ox + P.hip.x;
+      jp[1] = oy + P.hip.y;
+      jp[3] = ox + P.shoulder.x;
+      jp[4] = oy + P.shoulder.y;
+      jp[36] = ox + P.head.x;
+      jp[37] = oy + P.head.y;
+      for (let i = 0; i < 2; i++) {
+        const lg = P.legs[i], ar = P.arms[i];
+        let k = (2 + i) * 3;
+        jp[k] = ox + lg.knee.x;
+        jp[k + 1] = oy + lg.knee.y;
+        k = (4 + i) * 3;
+        jp[k] = ox + lg.ankle.x;
+        jp[k + 1] = oy + lg.ankle.y;
+        k = (6 + i) * 3;
+        jp[k] = ox + lg.toe.x;
+        jp[k + 1] = oy + lg.toe.y;
+        k = (8 + i) * 3;
+        jp[k] = ox + ar.elbow.x;
+        jp[k + 1] = oy + ar.elbow.y;
+        k = (10 + i) * 3;
+        jp[k] = ox + ar.wrist.x;
+        jp[k + 1] = oy + ar.wrist.y;
+        k = (13 + i) * 3; // limb roots
+        jp[k] = jp[0];
+        jp[k + 1] = jp[1];
+        k = (15 + i) * 3;
+        jp[k] = jp[3];
+        jp[k + 1] = jp[4];
+      }
+      for (let i = 0; i < 11; i++) bone(i);
+      for (let i = 0; i < 13; i++) joint(i);
+      bones.instanceMatrix.needsUpdate = true;
+      joints.instanceMatrix.needsUpdate = true;
+      const k = clamp(1 - oy / 2.2, 0.35, 1);
+      shadow.position.x = ox + 0.06;
+      shadow.scale.set(0.42 * k, 1, 0.30 * k);
+      const on = av.charged && av.air < 0.5;
+      glow.visible = on;
+      if (on) glow.position.set(jp[0] + 0.15, jp[1], 0);
+    }
+
+    // The sim moves bursts in x and height only, which from behind collapses a burst into one vertical
+    // line. Fan them out sideways from where each one is: a stable direction from its own vx (it only
+    // changes at a ground bounce), growing with its age.
+    function fan(p) {
+      const h = Math.sin(p.vx * 127.1 + 311.7) * 43758.5453;
+      return (h - Math.floor(h) - 0.5) * 2 * 1.6 * (p.max - p.life);
+    }
+    function updateParticles(list) {
+      const total = list ? list.length : 0;
+      const n = Math.min(total, capacity);
+      const first = total - n; // when over capacity keep the newest
+      for (let i = 0; i < n; i++) {
+        const p = list[first + i];
+        const c = linear(p.col);
+        pPos[i * 3] = p.x;
+        pPos[i * 3 + 1] = p.h;
+        pPos[i * 3 + 2] = -p.z + (p.size >= 0.05 && p.z === 0 ? fan(p) : 0);
+        pCol[i * 4] = c[0];
+        pCol[i * 4 + 1] = c[1];
+        pCol[i * 4 + 2] = c[2];
+        pCol[i * 4 + 3] = clamp(p.life / p.max, 0, 1);
+        pSize[i] = p.size;
+      }
+      if (n > 0 || lastN > 0) {
+        aPos.needsUpdate = true;
+        aCol.needsUpdate = true;
+        aSize.needsUpdate = true;
+      }
+      gPts.setDrawRange(0, n);
+      lastN = n;
+    }
+
+    function hideNode(n) {
+      if (!n.shown) return;
+      n.shown = false;
+      n.el.hidden = true;
+    }
+    // Slot i floats 0.55 m above slot i - 1, but the clamp stops anything rising past the HUD line,
+    // so working from the top slot down each lower one is pushed at least a line below the one above.
+    function updatePopups(list, r, cam) {
+      const live = Math.min(list ? list.length : 0, POOL);
+      for (let i = live; i < POOL; i++) hideNode(nodes[i]);
+      const line = clamp(0.052 * Math.min(W, H), 20, 40) * 1.05; // .pop3d font: clamp(20px, 5.2vmin, 40px)
+      let floor = minRow * H;
+      for (let i = live - 1; i >= 0; i--) {
+        const n = nodes[i], q = list[i];
+        _p.set(r.x + 2.0, r.y + 1.9 + (q.max - q.life) * 0.6 + 0.55 * i, 0).project(cam);
+        const px = (_p.x * 0.5 + 0.5) * W;
+        const py = Math.max((0.5 - _p.y * 0.5) * H, floor);
+        floor = py + line;
+        if (q.text !== n.text) { n.text = q.text; n.el.textContent = q.text; }
+        if (q.color !== n.color) { n.color = q.color; n.el.style.color = q.color; }
+        const op = Math.round(Math.min(1, 1.6 * q.life / q.max) * 50) / 50;
+        if (op !== n.op) { n.op = op; n.el.style.opacity = String(op); }
+        if (Math.abs(px - n.x) > 0.5 || Math.abs(py - n.y) > 0.5) {
+          n.x = px;
+          n.y = py;
+          n.el.style.transform = 'translate(-50%,-50%) translate3d(' + px.toFixed(1) + 'px,' + py.toFixed(1) + 'px,0)';
+        }
+        if (!n.shown) { n.shown = true; n.el.hidden = false; }
+      }
+    }
+
+    function update(f) {
+      updateRunner(f);
+      updateParticles(f.particles);
+      updatePopups(f.popups, f.race, f.camera);
+    }
+
+    function setView(vfov, w, h, portrait) {
+      W = w;
+      H = h;
+      minRow = portrait ? 0.22 : 0.15;
+      mPts.size = 1 / Math.tan((vfov * Math.PI) / 360);
+    }
+    function setTier(n) {
+      tier = TIERS[clamp(n | 0, 0, TIERS.length - 1)];
+      capacity = Math.min(MAXP, tier.particles);
+      points.visible = capacity > 0;
+      if (capacity === 0) { gPts.setDrawRange(0, 0); lastN = 0; }
+    }
+    function prewarm(on) { glow.visible = on; } // so renderer.compile sees the (normally hidden) charge glow
+    function snap() {
+      easing = false;
+      gaitE = -1;
+      for (const n of nodes) { n.x = -9999; n.y = -9999; hideNode(n); }
+    }
+    function dispose() {
+      if (disposed) return;
+      disposed = true;
+      for (const n of nodes) if (n.el.parentNode) n.el.parentNode.removeChild(n.el);
+      if (rootG.parent) rootG.parent.remove(rootG);
+      bones.dispose();
+      joints.dispose();
+      for (const g of [gBone, gJoint, gShadow, gGlow, gPts]) g.dispose();
+      for (const m of [mBody, mShadow, mGlow, mPts]) m.dispose();
+    }
+
+    setTier(TIERS.indexOf(tier));
+    return { root: rootG, update, setView, setTier, snap, prewarm, dispose, pose: P, a3 };
+  }
+
+  Object.assign(LF, { Actors3D: { create, POOL, MAXP } });
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
+/* Lane Four 3D scene: the WebGL renderer, chase camera, quality tiers, context loss and lifecycle,
+   built from a THREE namespace passed in. Attaches LaneFour.Scene3D. Needs core.js, geom.js,
+   assets3d.js, world3d.js and actors3d.js loaded first, and a DOM.
+
+   const scene = LaneFour.Scene3D.create(THREE, opts)       // throws if WebGL cannot start
+     canvas        the #world3d element (it gets a WebGL2 context; dispose() swaps it for a fresh clone)
+     popLayer      the #popLayer element
+     race          the current LaneFour.Race
+     tier          0..3 to start there; omit to pick (coarse pointer: T1 else T0, stepped from the stored tier)
+     lockTier      true: never change tier and never fall back for speed (?tier=N, tests)
+     reduceMotion  initial only; render(ctx) re-reads ctx.reduceMotion every frame
+     failIfMajorPerformanceCaveat  default true; pass false under ?renderer=3d
+     onFallback    function({ reason, message, tier, emergency }) called once when 3D must give way to 2D:
+                   reason 'context-lost' (scene already disposing itself), 'slow' or 'emergency'
+     dpr, coarse, storage   overrides for devicePixelRatio, (pointer:coarse) and localStorage (tests)
+
+   scene.render(ctx)    once per rAF while 3D is the visible view; returns true when it drew a frame.
+                        ctx = { race, av, phase, particles, popups, t, dt, reduceMotion, poseFps, mode, sheet }
+                        (av = S.av, particles = S.particles, popups = S.popups, t seconds, dt clamped seconds,
+                        poseFps = S.poseFps, mode 'camera' | 'manual', sheet true while the intro or the results
+                        sheet covers the picture: 15 fps). Allocation free except popup style strings.
+   scene.idle(ctx)      once per rAF while the scene exists but 2D is visible (feeds the 2D pose-rate baseline)
+   scene.onEvent(e)     every race event: 'hit' shakes the camera, 'clear' 'star' 'finish' cheer the stands
+   scene.layout()       re-read the canvas size and DPR; true if anything changed
+   scene.setTier(n)     force a tier (debug); scene.discardTiming() after anything that disturbs frame times
+   scene.stats()        { line, tier, tierName, rig, fps, p95ms, megapixels, calls, triangles, ... } (allocates; <= 4 Hz)
+   scene.project(x,y,z) pixel position of a point (race x, height, three Z = minus race z) as { x, y, depth }
+   scene.probe()        render, then read a 7x7 grid of pixels in the same task
+   scene.forceContextLoss(), scene.dispose() (idempotent), scene.parts (debug handles)
+   Properties: canvas, tier, rig, lost, disposed, drawn (frames drawn). */
+(function (root) {
+  'use strict';
+  const LF = root.LaneFour;
+  if (!LF || !LF.Geom || !LF.World3D || !LF.Actors3D) throw new Error('scene3d.js needs core.js, geom.js, assets3d.js, world3d.js and actors3d.js loaded first');
+  const { clamp } = LF;
+  const G = LF.Geom;
+  const { approach, TIERS, RIGS } = G;
+
+  const CLEAR = 0x1b2f5c;
+  const SHAKE_T = 0.35;
+  const SHAKE_AMP = 0.10;
+  const SHAKE_HZ = 7;
+  const STORE_KEY = 'lanefour.tier3d';
+  const STORE_MS = 14 * 24 * 3600 * 1000;
+  const STABLE_MS = 30000; // a tier that held this long while racing is remembered
+  const RING = 300;
+
+  // ----------------------------------------------------------- chase camera (no THREE)
+  class ChaseCam {
+    constructor() {
+      this.rig = RIGS.standard;
+      this.sol = G.solveRig(this.rig, 0);
+      this.s = 0; // speed zoom-out, 0..1
+      this.yS = 0; // smoothed runner height
+      this.left = 0; // seconds of hit shake left
+      this.x = 0;
+      this.y = 3.4;
+      this.z = 0;
+      this.pitch = this.sol.pitch;
+    }
+    setRig(rig) {
+      this.rig = rig;
+      G.solveRig(rig, this.s, this.sol);
+      this.pitch = this.sol.pitch;
+    }
+    hit() { this.left = SHAKE_T; }
+    // snap: jump every smoothed value to where it is heading (new race, first frame, restart).
+    update(dt, r, av, phase, reduce, snap) {
+      const vEff = phase === 'paused' ? 0 : r.v;
+      const tgt = reduce ? 0 : clamp(vEff / 9.5, 0, 1);
+      this.s = snap || reduce ? tgt : approach(this.s, tgt, dt, 0.6);
+      this.yS = snap ? r.y : approach(this.yS, r.y, dt, reduce ? 0.25 : 0.12);
+      if (snap || reduce) this.left = 0;
+      const sol = G.solveRig(this.rig, this.s, this.sol);
+      let y = sol.height + 0.4 * this.yS - 0.25 * av.crouch;
+      let z = 0;
+      if (!reduce) {
+        y += 0.02 * av.gait * Math.cos(4 * Math.PI * av.phase);
+        if (this.left > 0) {
+          const el = SHAKE_T - this.left, k = 1 - el / SHAKE_T, amp = SHAKE_AMP * k * k, w = 2 * Math.PI * SHAKE_HZ * el;
+          y += amp * Math.sin(w);
+          z = amp * Math.cos(w);
+          this.left = Math.max(0, this.left - dt);
+        }
+      }
+      this.x = r.x - sol.back; // never lags: a hit drops v to 35% in one step
+      this.y = Math.max(3.15, y); // the finish board top is 3.0 m
+      this.z = z;
+      this.pitch = sol.pitch;
+    }
+  }
+
+  // ------------------------------------------------------------------- start tier
+  const tierKey = (dpr, w, h) => (Math.round(dpr * 100) / 100) + '|' + Math.round(Math.min(w, h));
+
+  // Coarse pointer starts at T1, others at T0. A stored tier under 14 days old for the same
+  // dpr and screen starts one step above it, so a bad session heals. Pure.
+  function pickStartTier(o) {
+    const def = o.coarse ? 1 : 0;
+    const s = o.stored;
+    if (s && typeof s === 'object' && s.k === o.key && Number.isFinite(s.t) && Number.isFinite(s.at)) {
+      const age = o.now - s.at;
+      if (age >= -60000 && age < STORE_MS) return clamp(Math.max(Math.round(s.t) - 1, def), 0, TIERS.length - 1);
+    }
+    return def;
+  }
+  function safeStorage() { try { return root.localStorage || null; } catch (e) { return null; } }
+  function readStored(st) { try { return st ? JSON.parse(st.getItem(STORE_KEY)) : null; } catch (e) { return null; } }
+  function writeStored(st, rec) { try { if (st) st.setItem(STORE_KEY, JSON.stringify(rec)); } catch (e) { /* storage unavailable */ } }
+
+  // ------------------------------------------------------------------------ create
+  function create(THREE, opts) {
+    const T = THREE;
+    const o = opts || {};
+    const canvas = o.canvas;
+    if (!canvas || !o.popLayer || !o.race) throw new Error('Scene3D.create needs opts.canvas, opts.popLayer and opts.race');
+    const doc = canvas.ownerDocument || root.document;
+    const dprNow = () => o.dpr || root.devicePixelRatio || 1;
+    const storage = o.storage !== undefined ? o.storage : safeStorage();
+    const lockTier = o.lockTier === true;
+    let sw = 1, sh = 1; // scratch: last measured CSS size
+    const measure = () => {
+      sw = canvas.clientWidth;
+      sh = canvas.clientHeight;
+      if (!(sw > 0 && sh > 0)) { // display:none until the first frame: use the viewport the canvas will fill
+        const d = doc.documentElement;
+        sw = d.clientWidth || root.innerWidth || 1;
+        sh = d.clientHeight || root.innerHeight || 1;
+      }
+    };
+    measure();
+    const key = tierKey(dprNow(), sw, sh);
+    const coarse = o.coarse !== undefined ? !!o.coarse : !!(root.matchMedia && root.matchMedia('(pointer:coarse)').matches);
+    const defTier = coarse ? 1 : 0;
+    const stored = readStored(storage);
+    let tierIdx = typeof o.tier === 'number' ? clamp(o.tier | 0, 0, TIERS.length - 1) : pickStartTier({ coarse, stored, key, now: Date.now() });
+    let tier = TIERS[tierIdx];
+
+    // A canvas that has had a WebGL context can never get another one, so retiring it leaves a pristine
+    // clone (same id and attributes, hidden) in its place for the next create().
+    function retireCanvas() {
+      if (!canvas.parentNode) return;
+      const fresh = canvas.cloneNode(false);
+      fresh.removeAttribute('width');
+      fresh.removeAttribute('height');
+      fresh.removeAttribute('style');
+      fresh.removeAttribute('data-engine'); // three's own mark
+      fresh.className = '';
+      fresh.hidden = true;
+      canvas.parentNode.replaceChild(fresh, canvas);
+    }
+
+    // The context first, with exactly the options of the spec (three's own constructor would force
+    // alpha: true): if WebGL cannot start, nothing else has been built yet.
+    let gl = null;
+    try {
+      gl = canvas.getContext('webgl2', {
+        antialias: false, alpha: false, depth: true, stencil: false, premultipliedAlpha: true, preserveDrawingBuffer: false,
+        powerPreference: 'default', failIfMajorPerformanceCaveat: o.failIfMajorPerformanceCaveat !== false,
+      });
+    } catch (e) { gl = null; }
+    if (!gl) throw new Error('WebGL2 is not available (the context could not be created).');
+    let renderer;
+    try {
+      renderer = new T.WebGLRenderer({ canvas, context: gl, antialias: false, alpha: false, stencil: false, preserveDrawingBuffer: false, powerPreference: 'default' });
+    } catch (e) {
+      retireCanvas();
+      throw e;
+    }
+    let world = null, actors = null, dead = false, failed = null, lost = false;
+    const scene = new T.Scene();
+    const camera = new T.PerspectiveCamera(50, 1, 0.3, tier.far);
+    camera.rotation.order = 'YXZ';
+    const cam = new ChaseCam();
+    const ctl = new G.QualityController({ tier: tierIdx });
+
+    // ---- per-frame state, all preallocated
+    const wctx = { race: null, t: 0, dt: 0, camera, reduceMotion: false, phase: 'ready' };
+    const fa = { race: null, av: null, phase: 'ready', particles: null, popups: null, dt: 0, reduceMotion: false, camera };
+    const av0 = { phase: 0, target: 0, crouch: 0, air: 0, stumble: 0, gait: 0, charged: false, t: 0 };
+    const ring = new Float32Array(RING);
+    const _v = new T.Vector3();
+    const pout = { x: 0, y: 0, depth: 0 };
+    const px = new Uint8Array(4);
+    let W = 0, H = 0, PR = 0;
+    let ringN = 0, ringPos = 0, lastCall = -1;
+    let nextDraw = 0, lastCap = 0, accDt = 0, nowMs = 0;
+    let lastRace = null, lastX = 0;
+    let visible = false, drawn = 0, stableT0 = 0, persisted = false, reduceNow = !!o.reduceMotion;
+    let onVis = null;
+
+    function disposeAll() { // used by dispose() and by a failed create()
+      if (dead) return;
+      dead = true;
+      if (onVis && doc) doc.removeEventListener('visibilitychange', onVis);
+      canvas.removeEventListener('webglcontextlost', onLost);
+      try { if (actors) actors.dispose(); } catch (e) { /* keep going */ }
+      try { if (world) world.dispose(); } catch (e) { /* keep going */ }
+      scene.clear();
+      try { renderer.dispose(); } catch (e) { /* keep going */ }
+      try { if (!gl.isContextLost()) renderer.forceContextLoss(); } catch (e) { /* keep going */ }
+      retireCanvas();
+    }
+    function fail(reason, message, emergency) {
+      if (failed) return;
+      failed = { reason, message };
+      if (typeof o.onFallback === 'function') {
+        try { o.onFallback({ reason, message, tier: tierIdx, emergency: !!emergency }); } catch (e) { /* the app's problem */ }
+      }
+      if (reason === 'context-lost') disposeAll();
+    }
+    function onLost(ev) {
+      ev.preventDefault();
+      lost = true;
+      fail('context-lost', 'The graphics context was lost.', true);
+    }
+    canvas.addEventListener('webglcontextlost', onLost);
+
+    try {
+      if (!gl || gl.isContextLost()) throw new Error('WebGL context unavailable');
+      renderer.setClearColor(CLEAR);
+      scene.fog = new T.Fog(CLEAR, tier.fogNear, tier.fogFar);
+      world = LF.World3D.build(T, { race: o.race, tier: tierIdx, reduceMotion: reduceNow, anisotropy: renderer.capabilities.getMaxAnisotropy() });
+      actors = LF.Actors3D.create(T, { glowTexture: world.glowTexture, popLayer: o.popLayer, tier: tierIdx, reduceMotion: reduceNow });
+      scene.add(world.root, actors.root);
+    } catch (e) {
+      disposeAll();
+      throw e;
+    }
+
+    // ---- layout: CSS size, rig class, pixel ratio
+    function layout() {
+      if (dead) return false;
+      measure();
+      const pr = G.pixelRatio(dprNow(), sw, sh, tierIdx);
+      if (sw === W && sh === H && Math.abs(pr - PR) < 1e-6) return false;
+      W = sw;
+      H = sh;
+      PR = pr;
+      renderer.setPixelRatio(pr);
+      renderer.setSize(W, H, false);
+      const rig = G.rigFor(W, H);
+      cam.setRig(rig);
+      camera.fov = rig.vfov;
+      camera.aspect = W / H;
+      camera.updateProjectionMatrix();
+      actors.setView(rig.vfov, W, H, rig === RIGS.portrait);
+      ctl.discard(2);
+      return true;
+    }
+
+    function applyTier(n) {
+      tierIdx = clamp(n | 0, 0, TIERS.length - 1);
+      tier = TIERS[tierIdx];
+      camera.far = tier.far;
+      camera.updateProjectionMatrix();
+      scene.fog.near = tier.fogNear;
+      scene.fog.far = tier.fogFar;
+      world.setTier(tierIdx);
+      actors.setTier(tierIdx);
+      layout(); // the pixel ratio depends on the tier
+      lastCap = 0;
+    }
+    function setTier(n) {
+      if (dead) return tier;
+      applyTier(n);
+      ctl.tier = tierIdx;
+      ctl.clear();
+      stableT0 = nowMs;
+      persisted = true;
+      return tier;
+    }
+
+    // Everything one drawn frame needs except renderer.render itself.
+    function step(r, av, phase, dt, t, reduce, parts, pops, snap) {
+      cam.update(dt, r, av, phase, reduce, snap);
+      camera.position.set(cam.x, cam.y, cam.z);
+      camera.rotation.set(-cam.pitch, -Math.PI / 2, 0);
+      camera.updateMatrixWorld();
+      wctx.race = r;
+      wctx.t = t;
+      wctx.dt = dt;
+      wctx.reduceMotion = reduce;
+      wctx.phase = phase;
+      world.update(wctx);
+      if (snap) actors.snap();
+      fa.race = r;
+      fa.av = av;
+      fa.phase = phase;
+      fa.particles = parts;
+      fa.popups = pops;
+      fa.dt = dt;
+      fa.reduceMotion = reduce;
+      actors.update(fa);
+    }
+
+    // ---- the frame
+    function render(ctx) {
+      if (dead) return false;
+      const t = ctx.t, tMs = t * 1000;
+      nowMs = tMs;
+      if (!visible) { // 3D just became the visible view
+        visible = true;
+        ctl.setView3d(tMs, true);
+        ctl.discard(2);
+        if (failed && failed.reason !== 'context-lost') { failed = null; ctl.reset(); ctl.setView3d(tMs, true); }
+        nextDraw = 0;
+        accDt = 0;
+        lastCall = -1;
+        lastRace = null;
+        stableT0 = tMs;
+        persisted = false;
+      }
+      if (lastCall >= 0) {
+        const iv = tMs - lastCall;
+        if (iv > 0 && iv < 1000) { ring[ringPos] = iv; ringPos = (ringPos + 1) % RING; if (ringN < RING) ringN++; }
+      }
+      lastCall = tMs;
+      ctl.frame(tMs);
+      if (ctx.mode === 'camera' && ctx.poseFps > 0) ctl.pose(tMs, ctx.poseFps);
+      const phase = ctx.phase;
+      let verdict = 'none';
+      if (!lockTier) verdict = ctl.check(tMs, phase !== 'countdown' && phase !== 'running');
+      if (verdict === 'down') { applyTier(ctl.tier); stableT0 = tMs; persisted = false; }
+      accDt += ctx.dt;
+
+      // 15 fps behind a sheet: the app has no 'results' phase (the results sheet shows during 'finished'), so it says so with ctx.sheet
+      const cap = ctx.sheet === true || phase === 'intro' || phase === 'results' ? 15 : tier.fps === 30 ? 30 : 62;
+      if (cap !== lastCap) { lastCap = cap; nextDraw = 0; }
+      let did = false;
+      if (t >= nextDraw - 0.0015) {
+        const iv = 1 / cap;
+        nextDraw = t - nextDraw > iv ? t + iv : nextDraw + iv;
+        const dt = Math.min(0.25, accDt);
+        accDt = 0;
+        const r = ctx.race;
+        const snap = r !== lastRace || r.x < lastX - 1 || lastRace === null;
+        lastRace = r;
+        lastX = r.x;
+        reduceNow = !!ctx.reduceMotion;
+        if (!W) layout();
+        step(r, ctx.av, phase, dt, t, reduceNow, ctx.particles, ctx.popups, snap);
+        renderer.render(scene, camera);
+        drawn++;
+        did = true;
+        if (!persisted && !lockTier && phase === 'running' && tMs - stableT0 > STABLE_MS) {
+          persisted = true;
+          if (tierIdx > defTier || stored) writeStored(storage, { k: key, t: tierIdx, at: Date.now() });
+        }
+      }
+      if (verdict === 'to2d') fail(ctl.emergency ? 'emergency' : 'slow', ctl.emergency ? 'The 3D view could not keep up.' : 'The 3D view is too slow on this device.', ctl.emergency);
+      return did;
+    }
+
+    // The scene exists but 2D is what the player sees: keep the 2D pose rate as the baseline.
+    function idle(ctx) {
+      if (dead) return;
+      const tMs = ctx.t * 1000;
+      if (visible) { visible = false; ctl.setView3d(tMs, false); }
+      if (ctx.mode === 'camera' && ctx.poseFps > 0) ctl.pose(tMs, ctx.poseFps);
+    }
+
+    function onEvent(e) {
+      if (dead || !e) return;
+      switch (e.type) {
+        case 'hit': if (!reduceNow) cam.hit(); break;
+        case 'clear': case 'star': case 'finish': world.cheer(e.type); break;
+        default: break;
+      }
+    }
+
+    function project(x, y, z) {
+      camera.updateMatrixWorld();
+      _v.set(x, y, z).applyMatrix4(camera.matrixWorldInverse);
+      pout.depth = -_v.z;
+      _v.applyMatrix4(camera.projectionMatrix);
+      pout.x = (_v.x * 0.5 + 0.5) * W;
+      pout.y = (0.5 - _v.y * 0.5) * H;
+      return pout;
+    }
+
+    // Re-render, then read the 7x7 grid straight away (the drawing buffer is cleared after compositing).
+    function probe() {
+      if (dead || gl.isContextLost()) return null;
+      renderer.render(scene, camera);
+      const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+      const seen = new Set(), samples = [];
+      const read = (fx, fy) => {
+        gl.readPixels(Math.min(w - 1, Math.floor(fx * w)), Math.max(0, h - 1 - Math.floor(fy * h)), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        return [px[0], px[1], px[2]];
+      };
+      for (let j = 0; j < 7; j++) {
+        for (let i = 0; i < 7; i++) {
+          const c = read((i + 0.5) / 7, (j + 0.5) / 7);
+          samples.push(c);
+          seen.add((c[0] >> 3) + ',' + (c[1] >> 3) + ',' + (c[2] >> 3));
+        }
+      }
+      const low = read(0.5, 0.9);
+      return { w, h, distinct: seen.size, samples, at: low, redDominant: low[0] > 100 && low[0] > low[1] * 1.4 && low[0] > low[2] * 1.4 };
+    }
+
+    function stats() {
+      const info = renderer.info;
+      let fps = 0, p95 = 0;
+      if (ringN > 0) {
+        const a = ring.slice(0, ringN).sort();
+        let sum = 0;
+        for (let i = 0; i < ringN; i++) sum += a[i];
+        fps = (1000 * ringN) / sum;
+        p95 = a[Math.min(ringN - 1, Math.floor(ringN * 0.95))];
+      }
+      const mp = (canvas.width * canvas.height) / 1e6;
+      const calls = info.render.calls, tris = info.render.triangles;
+      const rigName = cam.rig.name;
+      return {
+        line: 'View: 3D chase · ' + tier.name + ' · ' + Math.round(fps) + ' fps (p95 ' + Math.round(p95) + ' ms) · ' + mp.toFixed(2) + ' MP · ' + calls + ' calls · ' + (tris / 1000).toFixed(1) + 'k tris · ' + rigName,
+        tier: tierIdx, tierName: tier.name, rig: rigName, fps, p95ms: p95, megapixels: mp, pixelRatio: PR, cssWidth: W, cssHeight: H,
+        calls, triangles: tris, geometries: info.memory.geometries, textures: info.memory.textures,
+        textureMB: world.stats().textureMB, frames: drawn, lost, locked: lockTier, controllerTarget: ctl.target,
+        fallback: failed ? failed.reason : null,
+      };
+    }
+
+    onVis = () => {
+      if (dead || !doc || doc.hidden) return;
+      ctl.clear();
+      nextDraw = 0;
+      accDt = 0;
+      lastCall = -1;
+      if (gl.isContextLost()) onLost({ preventDefault() {} });
+    };
+    doc.addEventListener('visibilitychange', onVis);
+
+    // ---- prime: first-frame state, programs compiled once (the charge glow too, which is hidden until a squat)
+    try {
+      layout();
+      step(o.race, av0, 'ready', 0.016, 0, reduceNow, null, null, true);
+      lastRace = o.race;
+      lastX = o.race.x;
+      actors.prewarm(true);
+      renderer.compile(scene, camera);
+      actors.prewarm(false);
+      if (gl.isContextLost()) throw new Error('WebGL context lost while starting');
+    } catch (e) {
+      disposeAll();
+      throw e;
+    }
+
+    return {
+      canvas, render, idle, onEvent, layout, setTier, project, probe, stats,
+      discardTiming() { ctl.discard(2); },
+      forceContextLoss() { if (!dead) renderer.forceContextLoss(); },
+      dispose: disposeAll,
+      get tier() { return tierIdx; },
+      get rig() { return cam.rig.name; },
+      get lost() { return lost; },
+      get disposed() { return dead; },
+      get drawn() { return drawn; },
+      parts: { renderer, scene, camera, cam, ctl, world, actors },
+    };
+  }
+
+  Object.assign(root.LaneFour, { Scene3D: { create, ChaseCam, pickStartTier, tierKey } });
 })(typeof window !== 'undefined' ? window : globalThis);
 
 </script>
