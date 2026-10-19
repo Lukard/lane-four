@@ -8,12 +8,20 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Big+Shoulders+Display:wght@700;800;900&family=Doto:wght@900&display=swap">
+<script type="importmap">
+{"imports":{
+"https://cdn.jsdelivr.net/npm/three@__THREE_VERSION__/build/three.core.js":"https://cdn.jsdelivr.net/npm/three@__THREE_VERSION__/build/three.core.min.js",
+"https://cdnjs.cloudflare.com/ajax/libs/three.js/__THREE_VERSION__/three.core.js":"https://cdnjs.cloudflare.com/ajax/libs/three.js/__THREE_VERSION__/three.core.min.js"
+}}
+</script>
 <style>
 /*STYLE*/
 </style>
 </head>
 <body>
 <canvas id="world" aria-hidden="true"></canvas>
+<canvas id="world3d" aria-hidden="true" hidden></canvas>
+<div id="popLayer" aria-hidden="true"></div>
 
 <header id="hud" hidden>
   <div class="hud-dist">
@@ -29,6 +37,7 @@
   <div class="hud-clock">
     <div class="board"><span class="led" id="clock">0:00.0</span></div>
     <div class="hud-buttons">
+      <button class="chip" id="btnView" type="button" aria-pressed="true" hidden>3D</button>
       <button class="chip" id="btnSignals" type="button" aria-pressed="false" aria-controls="tune">Signals</button>
       <button class="chip" id="btnSound" type="button" aria-pressed="true" aria-label="Sound">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"/><path id="soundWave" d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg>
@@ -78,6 +87,10 @@
       <div class="pick" role="radiogroup" aria-label="Race distance">
         <button type="button" role="radio" data-dist="400" aria-checked="true">400 m hurdles<small>10 hurdles · about 2 minutes</small></button>
         <button type="button" role="radio" data-dist="200" aria-checked="false">200 m hurdles<small>5 hurdles · about 1 minute</small></button>
+      </div>
+      <div class="pick" role="radiogroup" aria-label="View" hidden>
+        <button type="button" role="radio" data-view="3d" aria-checked="true">3D chase</button>
+        <button type="button" role="radio" data-view="2d" aria-checked="false">Classic side view</button>
       </div>
       <div class="actions">
         <button class="btn primary" id="btnCamera" type="button">Start with camera</button>
@@ -136,8 +149,19 @@
   <button id="padStart" type="button" hidden>Start race<small>Enter</small></button>
 </div>
 
+<div id="toast" role="status" hidden></div>
+
 <script>
 /*CORE*/
+</script>
+<script>
+/*GEOM*/
+</script>
+<script>
+/*WORLD3D*/
+</script>
+<script>
+/*SCENE3D*/
 </script>
 <script>
 /*APP*/

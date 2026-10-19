@@ -2,7 +2,8 @@
 (function () {
   'use strict';
   const LF = window.LaneFour;
-  const { clamp, mix } = LF;
+  const { clamp } = LF;
+  const Geom = LF.Geom;
   const $ = (id) => document.getElementById(id);
 
   const MP_VERSION = '1.0.1';
@@ -1199,7 +1200,7 @@
   // way real hurdles do, pivoting on the front of its base.
   function drawHurdle(h) {
     const HH = 0.914;
-    const ang = h.state === 'hit' ? easeOutBack(h.fall) * 1.38 : 0;
+    const ang = h.state === 'hit' ? Geom.easeOutBack(h.fall) * 1.38 : 0;
     const ca = Math.cos(ang);
     const sa = Math.sin(ang);
     const rot = (dx, hm) => [dx * ca + hm * sa, -dx * sa + hm * ca];
@@ -1247,12 +1248,6 @@
     }
   }
 
-  function easeOutBack(k) {
-    const c1 = 1.4;
-    const c3 = c1 + 1;
-    return 1 + c3 * Math.pow(k - 1, 3) + c1 * Math.pow(k - 1, 2);
-  }
-
   function drawStar(cx, cy, rad, rot) {
     g.beginPath();
     for (let i = 0; i < 10; i++) {
@@ -1281,65 +1276,10 @@
     }
   }
 
-  // Procedural runner in the style of a sports pictogram. Meters, y up,
-  // origin on the ground under the hips.
-  function runnerPose(a) {
-    const TH = 0.46;
-    const SH = 0.46;
-    const TOR = 0.55;
-    const UA = 0.29;
-    const FA = 0.27;
-    const s = a.gait;
-    const legs = [];
-    for (let i = 0; i < 2; i++) {
-      const w = 2 * Math.PI * (a.phase + i * 0.5);
-      let th = (0.06 + 0.62 * s) * Math.sin(w);
-      let kn = (0.12 + 1.45 * s) * (0.5 + 0.5 * Math.cos(w + 0.3));
-      th = mix(th, 1.12, a.crouch);
-      kn = mix(kn, 2.05, a.crouch);
-      th = mix(th, i === 0 ? 1.45 : -0.25, a.air);
-      kn = mix(kn, i === 0 ? 0.12 : 1.85, a.air);
-      const knee = { x: TH * Math.sin(th), y: -TH * Math.cos(th) };
-      const shin = th - kn;
-      const ankle = { x: knee.x + SH * Math.sin(shin), y: knee.y - SH * Math.cos(shin) };
-      const fa = shin + Math.PI / 2 - 0.15;
-      const toe = { x: ankle.x + 0.15 * Math.sin(fa), y: ankle.y - 0.15 * Math.cos(fa) };
-      legs.push({ knee, ankle, toe });
-    }
-    const low = Math.min(legs[0].ankle.y, legs[1].ankle.y, legs[0].toe.y, legs[1].toe.y);
-    const breathe = s < 0.05 && a.air < 0.1 && !reduceMotion ? Math.sin((a.t || 0) * 1.6) * 0.008 : 0;
-    const hip = { x: 0, y: -low + 0.05 + breathe };
-    let lean = 0.05 + 0.18 * s;
-    lean = mix(lean, 0.5, a.crouch * 0.9);
-    lean = mix(lean, 0.62, a.air);
-    lean += 0.75 * a.stumble;
-    const shoulder = { x: hip.x + TOR * Math.sin(lean), y: hip.y + TOR * Math.cos(lean) };
-    const head = { x: shoulder.x + 0.21 * Math.sin(lean * 0.8), y: shoulder.y + 0.21 * Math.cos(lean * 0.8) };
-    const arms = [];
-    for (let j = 0; j < 2; j++) {
-      const w = 2 * Math.PI * (a.phase + (1 - j) * 0.5);
-      let al = (0.1 + 0.85 * s) * Math.sin(w);
-      let el2 = 0.35 + 1.15 * s;
-      al = mix(al, -0.85, a.crouch);
-      el2 = mix(el2, 0.5, a.crouch);
-      al = mix(al, j === 1 ? 1.55 : -0.55, a.air);
-      el2 = mix(el2, j === 1 ? 0.25 : 1.2, a.air);
-      al = mix(al, 2.3, a.stumble * 0.8);
-      const elbow = { x: shoulder.x + UA * Math.sin(al), y: shoulder.y - UA * Math.cos(al) };
-      const wrist = { x: elbow.x + FA * Math.sin(al + el2), y: elbow.y - FA * Math.cos(al + el2) };
-      arms.push({ elbow, wrist });
-    }
-    const abs = (p) => ({ x: hip.x + p.x, y: hip.y + p.y });
-    return {
-      hip, shoulder, head, arms,
-      legs: legs.map((l) => ({ knee: abs(l.knee), ankle: abs(l.ankle), toe: abs(l.toe) })),
-    };
-  }
-
   function drawRunner() {
     const r = S.race;
     const a = S.av;
-    const p = runnerPose(a);
+    const p = Geom.runnerPose(a, reduceMotion);
     const ox = V.rx;
     const oy = V.ground - r.y * V.ppm;
     const X = (q) => ox + q.x * V.ppm;
@@ -1568,7 +1508,7 @@
     el.squatTOut.textContent = Number(settings.squatDown).toFixed(2);
     el.btnSound.setAttribute('aria-pressed', String(settings.sound));
     el.soundWave.style.opacity = settings.sound ? '1' : '0';
-    document.querySelectorAll('.pick button').forEach((b) => b.setAttribute('aria-checked', String(Number(b.dataset.dist) === settings.distance)));
+    document.querySelectorAll('.pick button[data-dist]').forEach((b) => b.setAttribute('aria-checked', String(Number(b.dataset.dist) === settings.distance)));
   }
 
   // ---------------------------------------------------------------- wake lock
@@ -1627,7 +1567,7 @@
   el.btnRecal.addEventListener('click', () => {
     if (S.mode === 'camera' && S.phase !== 'intro') enterSetup();
   });
-  document.querySelectorAll('.pick button').forEach((b) => {
+  document.querySelectorAll('.pick button[data-dist]').forEach((b) => {
     b.addEventListener('click', () => {
       settings.distance = Number(b.dataset.dist);
       store.set('distance', settings.distance);

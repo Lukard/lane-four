@@ -5,11 +5,12 @@
   "description": "Camera-tracked hurdles prototype: jog in place to run, squat to jump.",
   "scripts": {
     "build": "node build.js",
-    "test": "node --test test/core.test.js",
+    "test": "node --test test/*.test.js",
     "test:browser": "python3 test/browser_test.py BC",
     "serve": "python3 -m http.server 8000 --directory docs"
   },
   "devDependencies": {
-    "@mediapipe/tasks-vision": "1.0.1"
+    "@mediapipe/tasks-vision": "1.0.1",
+    "three": "0.186.0"
   }
 }

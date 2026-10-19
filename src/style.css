@@ -36,7 +36,34 @@ body {
 button { font: inherit; color: inherit; cursor: pointer; }
 button:focus-visible, input:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
 
-#world { position: fixed; inset: 0; display: block; width: 100%; height: 100%; }
+#world, #world3d { position: fixed; inset: 0; display: block; width: 100%; height: 100%; }
+/* The 3D canvas fades in once its first frame has rendered (class "on"). */
+#world3d { opacity: 0; transition: opacity .25s; }
+#world3d.on { opacity: 1; }
+/* Floating "Clear" / "Star" text in 3D; positioned by script, above the canvas and below the HUD. */
+#popLayer { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+.pop3d {
+  position: absolute; left: 0; top: 0;
+  font: 900 clamp(20px, 5.2vmin, 40px)/1 var(--display);
+  text-transform: uppercase;
+  -webkit-text-stroke: 4px rgba(5, 9, 22, .75);
+  paint-order: stroke fill;
+  will-change: transform;
+}
+#toast {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  top: calc(env(safe-area-inset-top, 0px) + 150px);
+  z-index: 40;
+  max-width: min(92vw, 420px);
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: rgba(7, 11, 23, .94);
+  border: 1px solid var(--board-edge);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .45);
+  font: 600 14px/1.35 var(--body);
+  text-align: center;
+  pointer-events: none;
+}
 
 /* ---------- HUD ---------- */
 #hud {
@@ -330,6 +357,7 @@ kbd {
 #padStart { grid-column: 1 / -1; background: var(--amber) !important; color: var(--amber-ink); border-color: var(--amber) !important; }
 
 @media (prefers-reduced-motion: reduce) {
+  #world3d { transition: none; }
   .banner-pop { animation: none; }
   .foot { transition: none; }
 }
