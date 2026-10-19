@@ -64,6 +64,10 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--amber); out
   text-align: center;
   pointer-events: none;
 }
+/* Behind the intro and results sheets there is no HUD to stay clear of, and the top would cover the card's title. */
+body[data-phase="intro"] #toast, body[data-phase="finished"] #toast {
+  top: auto; bottom: calc(env(safe-area-inset-bottom, 0px) + 20px);
+}
 
 /* ---------- HUD ---------- */
 #hud {
@@ -138,6 +142,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--amber); out
 }
 .chip svg { width: 16px; height: 16px; display: block; }
 .chip[aria-pressed="false"] { color: var(--muted); }
+.chip:disabled, .pick button:disabled { opacity: .45; cursor: default; }
 
 @media (max-width: 600px) {
   #hud { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "dist clock" "prog prog"; }

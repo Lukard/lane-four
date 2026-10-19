@@ -17,29 +17,82 @@ then every 35 m).
   on push, so run `npm run build` and commit `docs/index.html` with any `src/` change.
 - The repo uses a local git identity (GitHub noreply email), not the global work address, because
   the repo is public. Keep it that way.
-- Next step: open the Pages URL on a phone and try it with a real body in a real room.
+- 3D chase view built 2026-10-19 on the local branch `3d`: not pushed and not merged, so Pages still
+  serves the 2D-only page from `main`. The 2D renderer stays as a toggle and as the automatic
+  fallback; `src/core.js` (the game rules) is unchanged.
+- 3D verified only in headless Chromium with SwiftShader: 98 unit tests, browser runs B, C, D and E
+  (strict; B and C as 3D at the locked lowest tier and as 2D), and the 2D canvas matching the pre-3D
+  build in 89 of 89 checkpoints of a fake-clock keys run at 1280x800 and at 390x844@2. Never run on a
+  real GPU, a phone or iOS Safari. Frame cost, fill rate, shader compile time and every quality-tier
+  number are untested starting values. The real fonts (Big Shoulders Display, Doto) never loaded in
+  any 3D check.
+- Next step: open the Pages URL on a phone and try it with a real body in a real room. Then run the
+  `3d` branch on an iPhone and a mid-range Android for 3 minutes in camera mode: pose fps >= 24 and
+  rAF p95 <= 36 ms at the settled tier, or an automatic downgrade or 2D fallback with the race still
+  completing (also in Low Power Mode).
 
 ## Commands
 
 - `npm run build`: writes `docs/index.html`. Never edit that file; edit `src/` and rebuild.
-- `npm test`: unit tests (Node only, no install needed).
+- `npm install`: three (pinned 0.186.0) and MediaPipe. Needed for the 3D geometry tests and browser
+  runs B, C, E; without it those skip and `npm test` still passes.
+- `npm test`: unit tests (Node only).
 - `npm run serve`: http://localhost:8000. The camera works on localhost or https only.
-- `npm run test:browser`: Playwright runs B and C. Run A needs local assets, see README.md.
+- `npm run test:browser`: Playwright runs B, C, D, E; strict, any failed check exits 1. B and C run
+  twice: `?renderer=3d&tier=3` (SwiftShader) and `?renderer=2d`. It tests `docs/index.html`, so build
+  first (it fails if the file is stale). Run A needs local assets, see README.md.
+- URL params: `?renderer=2d|3d` overrides the saved choice for that load; `?tier=0..3` locks the 3D
+  quality tier. Keys: `V` toggles the view, `D` the signals panel.
 
 ## Architecture
 
-- `build.js` inlines `src/style.css`, `src/core.js` and `src/app.js` into `src/page.html`. The
-  result is one self-contained page. Inlined code must not contain `</script`.
+- `build.js` inlines `src/style.css`, `core.js`, `geom.js`, `assets3d.js`, `world3d.js`, `actors3d.js`,
+  `scene3d.js` and `app.js` (that load order) into `src/page.html`. The result is one self-contained
+  page except for three.js. Inlined code must not contain `</script`. It also replaces
+  `__THREE_VERSION__` everywhere (import map, `THREE_URLS`) with `package.json` devDependencies.three,
+  which must be an exact x.y.z. `require('./build.js').build()` returns the HTML without writing.
 - Network deps, all pinned: `@mediapipe/tasks-vision@1.0.1` UMD bundle and wasm from jsDelivr
   (global `Vision`), `pose_landmarker_lite` float16 model from storage.googleapis.com, Google Fonts
-  (Barlow, Big Shoulders Display, Doto).
-- `src/core.js` has no DOM access and attaches `LaneFour` to the global object, so Node tests load
-  it directly. `src/app.js` is the browser IIFE and exposes `window.laneFour = { state, settings }`
-  for debugging and the browser tests.
+  (Barlow, Big Shoulders Display, Doto), and `three@0.186.0` `three.module.min.js`, imported on
+  demand from jsDelivr, then cdnjs. An import map in page.html points the module's `./three.core.js`
+  at the minified core on each host. Failed imports are cached by the browser, so each URL is tried
+  once per page load; reloading is the only retry. The browser tests serve three from `node_modules`.
+- `src/core.js` and `src/geom.js` have no DOM access and attach to the global `LaneFour`, so Node
+  tests load them directly. `assets3d.js`, `world3d.js`, `actors3d.js` and `scene3d.js` take THREE as
+  an argument (classic IIFEs, no imports, no addons). `src/app.js` is the browser IIFE and exposes
+  `window.laneFour = { state, settings, view }` for debugging and the browser tests;
+  `view.scene` has `stats()`, `project(x, y, z)`, `probe()`, `forceContextLoss()`, `setTier(n)`.
 - Phases: intro, setup (calibration), ready (raise both hands, or Enter), countdown, running,
   paused (body out of frame for 1.2 s, or tab hidden), finished, results.
 - Pose math runs in a virtual frame 480 units tall (`FRAME_H`), so thresholds don't depend on
   camera resolution. Landmarks pass through a One Euro filter (minCutoff 1.7, beta 0.03).
+
+## 3D view, and why
+
+- Chase camera behind the runner, one of three rigs by aspect (portrait under 1.0, standard under
+  1.9, wide) in `Geom.RIGS`. Pitch is re-solved every frame to keep the feet on a fixed screen row.
+  Camera x is exactly `r.x - back`, never smoothed, because a hit drops speed to 35% in one step.
+- Axes: three X = race x, Y up, Z = minus race z (one negation keeps left on the left, infield on
+  screen-left). The mirrored Z is the likeliest place for a bug. Unlit `MeshBasicMaterial`, fog,
+  about 20 draw calls and 3 to 4k triangles; no lights, shadows or antialiasing.
+- Hurdles in state `up` scale to 1.4x with distance (`Geom.farScale`) so the whole hurdle, ground to
+  board top, is at least 24 px at 14 m in all three rigs (browser runs measure it). The wide rig sits
+  6.5 m back, not the spec's 6.0, or its hurdle top rose above the HUD line at 14 m.
+- Quality tiers T0 to T3 (`Geom.TIERS`: pixel-ratio and megapixel caps, particles, far plane, 30 fps
+  at T3). `Geom.QualityController` only steps down, then gives up to 2D. Start tier: coarse pointer
+  T1, else T0, stepped from a tier remembered in `lanefour.tier3d` for 14 days.
+- `view` in app.js: `mode` ('2d' | '3d', what is on screen) and `status` (idle, loading, ready,
+  failed). Fine-pointer desktops fetch three.js in idle time on load; everything else on the first
+  Start press; `?renderer=2d`, Save-Data and 2G skip it unless the player picks 3D. A swap into 3D
+  happens in intro, setup and ready (the toggle also in paused and finished), never in a race: if
+  three arrives after the countdown, that race finishes in 2D. The 3D canvas stays hidden until its
+  first frame; 250 ms later the 2D canvas is released (1x1, layers freed) and rebuilt on the way back.
+- Failures land in 2D with a toast, never a dead game: no WebGL2, import error or 12 s timeout, or
+  `create()` throwing (status failed); too slow (stays in 2D until the player picks 3D again);
+  context lost (one retry with the toggle). The saved choice is never changed by a failure.
+- Layout: `resize`, `orientationchange` and `visualViewport.resize` only mark it dirty; `frame()`
+  applies it after two stable frames and 250 ms. Popups are six pooled DOM nodes in `#popLayer`.
+- `frame()` returns early while the tab is hidden: no pose detection, no drawing.
 
 ## Detection, and why
 
@@ -74,6 +127,12 @@ then every 35 m).
   constant.
 - `test/fake-vision.js` replaces the MediaPipe bundle in browser runs B and C. Its bot stands still,
   raises both hands, jogs at 170 spm and squats from 5.5 m to 2.9 m before each hurdle.
+- `test/browser_test.py`: D aborts every three.js URL (race finishes in 2D, toast, status failed); E
+  calls `forceContextLoss()` in ready (lands in 2D, race continues, then one retry). The 3D runs
+  assert probe pixels, draw calls and triangles, flat geometry and texture counts, camera x, the
+  next hurdle's size at 14 m and the wide rig after rotating. The 2D screenshots differ from the
+  pre-3D ones by the new `3D` chip in the HUD and the View buttons on the intro card (which now
+  needs a small scroll on a 390x844 phone), apart from the usual timing-dependent numbers.
 
 ## Product direction (from the first conversation)
 
@@ -88,5 +147,10 @@ then every 35 m).
 ## Known gaps
 
 - Real-world tuning: lighting, loose clothes, portrait vs landscape framing, people walking behind.
-- iOS Safari untested (wake lock, speech, fullscreen). The GPU delegate falls back to CPU on its own.
+- iOS Safari untested (wake lock, speech, fullscreen, and the whole 3D path). The GPU delegate falls
+  back to CPU on its own.
+- 3D on real hardware: frame time next to MediaPipe's synchronous `detectForVideo`, GPU contention,
+  thermals. The wide (phone landscape) rig is the tightest: hurdle about 25 px at 14 m. From directly
+  behind, the gait reads flat. Late clears can look marginal against the 0.914 m board because
+  `core.js` clears at 0.72 m (the rules were left alone on purpose).
 - Only one exercise loop. No music; sound is WebAudio synth plus speechSynthesis.

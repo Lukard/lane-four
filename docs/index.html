@@ -81,6 +81,10 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--amber); out
   text-align: center;
   pointer-events: none;
 }
+/* Behind the intro and results sheets there is no HUD to stay clear of, and the top would cover the card's title. */
+body[data-phase="intro"] #toast, body[data-phase="finished"] #toast {
+  top: auto; bottom: calc(env(safe-area-inset-bottom, 0px) + 20px);
+}
 
 /* ---------- HUD ---------- */
 #hud {
@@ -155,6 +159,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--amber); out
 }
 .chip svg { width: 16px; height: 16px; display: block; }
 .chip[aria-pressed="false"] { color: var(--muted); }
+.chip:disabled, .pick button:disabled { opacity: .45; cursor: default; }
 
 @media (max-width: 600px) {
   #hud { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "dist clock" "prog prog"; }
@@ -2956,6 +2961,16 @@ kbd {
   const MP_VERSION = '1.0.1';
   const MP_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@' + MP_VERSION;
   const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
+  // three.js is pinned to one exact version (package.json devDependencies.three; build.js fills the
+  // placeholder in). Both hosts serve the generated minified module; the import map in page.html points
+  // its ./three.core.js import at the minified core on the same host.
+  const THREE_VERSION = '0.186.0';
+  const THREE_REVISION = '186';
+  const THREE_URLS = [
+    'https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.186.0/three.module.min.js',
+  ];
+  const THREE_TIMEOUT_MS = 12000;
   const DEFAULTS = { stepT: 0.045, squatDown: 0.4 };
   const reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 
@@ -2966,11 +2981,18 @@ kbd {
     },
     set(k, v) { try { localStorage.setItem('lanefour.' + k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } },
   };
+  // ?renderer=2d|3d overrides the saved choice for this page load only; ?tier=0..3 locks the 3D quality tier.
+  const query = new URLSearchParams(window.location.search);
+  const rendererParam = ['2d', '3d'].includes(query.get('renderer')) ? query.get('renderer') : null;
+  const tierParam = /^[0-3]$/.test(query.get('tier') || '') ? Number(query.get('tier')) : null;
+  const rendererSaved = store.get('renderer', 'auto');
   const settings = {
     stepT: store.get('stepT', DEFAULTS.stepT),
     squatDown: store.get('squatDown', DEFAULTS.squatDown),
     distance: store.get('distance', 400),
     sound: store.get('sound', true),
+    // auto = 3D when the device can do it (the default), 3d = the same, 2d = the classic side view only
+    renderer: rendererParam || (['auto', '3d', '2d'].includes(rendererSaved) ? rendererSaved : 'auto'),
   };
 
   // --------------------------------------------------------------------- DOM
@@ -2981,7 +3003,9 @@ kbd {
     'intro', 'introError', 'btnCamera', 'btnManual',
     'results', 'resEvent', 'resTime', 'resBest', 'resHurdles', 'resStars', 'resSquats', 'resSteps', 'resCad', 'resTop', 'resHint', 'btnAgain', 'btnSetup',
     'tune', 'tuneClose', 'sigStep', 'sigSquat', 'sigStepVal', 'sigSquatVal', 'stepT', 'stepTOut', 'squatT', 'squatTOut', 'readout', 'btnRecal', 'btnResetT',
-    'pads', 'padL', 'padR', 'padSquat', 'padStart'].forEach((id) => { el[id] = $(id); });
+    'pads', 'padL', 'padR', 'padSquat', 'padStart', 'popLayer', 'btnView', 'toast'].forEach((id) => { el[id] = $(id); });
+  // The 3D canvas is swapped for a fresh one when a scene is disposed, so never keep a reference to it.
+  Object.defineProperty(el, 'world3d', { get: () => $('world3d') });
 
   const css = getComputedStyle(document.documentElement);
   const tok = (name, fallback) => (css.getPropertyValue(name) || '').trim() || fallback;
@@ -3180,6 +3204,7 @@ kbd {
   function setPhase(p) {
     S.phase = p;
     document.body.dataset.phase = p;
+    updateViewControls();
   }
   function clearTimers() {
     S.timers.forEach(clearTimeout);
@@ -3206,6 +3231,7 @@ kbd {
     el.introError.hidden = !errorMsg;
     el.introError.textContent = errorMsg || '';
     newRace();
+    maybeSwapView();
   }
 
   function showPlayUi() {
@@ -3241,6 +3267,7 @@ kbd {
     showPlayUi();
     keepAwake();
     bannerKey = null;
+    maybeSwapView();
   }
 
   function enterReady() {
@@ -3254,6 +3281,7 @@ kbd {
       banner('Ready', 'Press Enter or tap Start race.', { tone: 'amber', pop: true });
       el.padStart.hidden = false;
     }
+    maybeSwapView();
   }
 
   function startCountdown() {
@@ -3353,6 +3381,7 @@ kbd {
     el.results.hidden = true;
     el.pads.hidden = S.mode !== 'manual';
     setPhase('ready');
+    maybeSwapView();
     startCountdown();
   }
 
@@ -3445,6 +3474,7 @@ kbd {
 
   async function startCamera() {
     Sound.unlock();
+    ensureThree(false);
     el.introError.hidden = true;
     el.btnCamera.disabled = true;
     el.btnManual.disabled = true;
@@ -3625,6 +3655,7 @@ kbd {
   // ------------------------------------------------------- keys/touch input
   function startManual() {
     Sound.unlock();
+    ensureThree(false);
     stopCamera();
     S.mode = 'manual';
     clearTimers();
@@ -3656,6 +3687,7 @@ kbd {
     if (e.target && e.target.tagName === 'INPUT') return;
     const k = e.key;
     if ((k === 'd' || k === 'D') && !e.metaKey && !e.ctrlKey) { toggleTune(); return; }
+    if ((k === 'v' || k === 'V') && !e.metaKey && !e.ctrlKey && !e.altKey) { if (!e.repeat) toggleView(); return; }
     if (S.phase === 'intro') return;
     if (k === 'Enter') {
       e.preventDefault();
@@ -3737,6 +3769,7 @@ kbd {
   }
 
   function handleRaceEvent(e) {
+    if (view.mode === '3d' && view.scene) view.scene.onEvent(e); // camera shake and crowd cheer
     switch (e.type) {
       case 'jump': Sound.jump(e.power); break;
       case 'clear':
@@ -3841,10 +3874,16 @@ kbd {
     };
   }
 
-  function resize() {
+  // Sizes every view shares: always applied.
+  function layoutShared() {
     V.dpr = Math.min(2, window.devicePixelRatio || 1);
     V.W = Math.max(1, window.innerWidth);
     V.H = Math.max(1, window.innerHeight);
+    sizeSigCanvases();
+  }
+
+  // The classic view's canvas and its prebuilt layers: only while 2D is what the player sees.
+  function layout2d() {
     cv.width = Math.round(V.W * V.dpr);
     cv.height = Math.round(V.H * V.dpr);
     const land = V.W >= V.H * 1.05;
@@ -3862,7 +3901,6 @@ kbd {
     buildSky();
     buildStands();
     buildGrain();
-    sizeSigCanvases();
   }
 
   function buildSky() {
@@ -3961,7 +3999,8 @@ kbd {
     g.setTransform(d, 0, 0, d, 0, 0);
   }
 
-  function render(t) {
+  function render2d(t) {
+    if (!V.sky) return; // released while the 3D view is showing
     const r = S.race;
     V.camX = r.x;
     const W = V.W;
@@ -4436,9 +4475,24 @@ kbd {
         lines.push('Keys/touch mode: signals are simulated.');
       }
       lines.push('In use: step ' + S.eff.step.toFixed(3) + ' · squat ' + S.eff.squat.toFixed(2) + ' · cadence ' + Math.round(S.cadence) + ' spm');
+      lines.push(viewLine());
       el.readout.textContent = lines.join('\n');
       el.readout.style.whiteSpace = 'pre-line';
     }
+  }
+
+  // The View line of the Signals panel. The scene's stats (a sorted copy of its 300-sample frame ring)
+  // are only computed here, four times a second, while the panel is open.
+  function viewLine() {
+    if (view.mode === '3d' && view.scene) return view.scene.stats().line;
+    let why = 'chosen';
+    if (settings.renderer !== '2d') {
+      if (view.status === 'failed' || view.slow) why = '3D unavailable: ' + view.reason;
+      else if (view.status === 'loading') why = 'loading 3D';
+      else if (view.status === 'idle') why = view.reason ? '3D not loaded: ' + view.reason : '3D loads when you start';
+      else why = 'switching to 3D';
+    }
+    return 'View: classic 2D (' + why + ')';
   }
 
   function toggleTune(force) {
@@ -4456,6 +4510,349 @@ kbd {
     el.btnSound.setAttribute('aria-pressed', String(settings.sound));
     el.soundWave.style.opacity = settings.sound ? '1' : '0';
     document.querySelectorAll('.pick button[data-dist]').forEach((b) => b.setAttribute('aria-checked', String(Number(b.dataset.dist) === settings.distance)));
+  }
+
+  // ------------------------------------------------------------------ 3D view
+  // The classic canvas view is always available. The 3D chase view is an optional upgrade: three.js
+  // loads on demand from a CDN, and any failure (no WebGL2, offline, a slow device, a lost context)
+  // lands back in 2D without losing the race.
+  //   view.mode    what the player sees: '2d' | '3d'
+  //   view.status  'idle' (not loaded) | 'loading' | 'ready' (three loaded; the scene is made on first use) | 'failed'
+  const view = {
+    mode: '2d', status: 'idle', reason: '', scene: null, three: null, version: THREE_VERSION,
+    shown: false, // the 3D canvas has drawn its first frame and is visible
+    slow: false, // fell back for speed: stay in 2D until the player asks for 3D again
+    retried: false, // the one re-create after a lost context has been used
+    forced3d: rendererParam === '3d', // ?renderer=3d also accepts a software renderer
+    wantNow: false, // the player asked for 3D while it was still loading
+    releaseTimer: 0, toastTimer: 0,
+  };
+  const viewPick = Array.from(document.querySelectorAll('.pick button[data-view]'));
+
+  function toast(message, ms) {
+    el.toast.textContent = message;
+    el.toast.hidden = false;
+    clearTimeout(view.toastTimer);
+    view.toastTimer = setTimeout(() => { el.toast.hidden = true; }, ms || 4000);
+  }
+
+  function probeWebGL2() {
+    let gl = null;
+    try {
+      gl = document.createElement('canvas').getContext('webgl2', { failIfMajorPerformanceCaveat: !view.forced3d });
+    } catch (e) { gl = null; }
+    if (!gl) throw Object.assign(new Error('WebGL2 is not available'), { code: 'no-webgl2' });
+    try {
+      const lose = gl.getExtension('WEBGL_lose_context');
+      if (lose) lose.loseContext(); // do not keep a context just for the probe
+    } catch (e) { /* released with the canvas */ }
+  }
+
+  function withTimeout(promise, ms, what) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(Object.assign(new Error(what + ' timed out'), { code: 'timeout' })), ms);
+      promise.then((v) => { clearTimeout(timer); resolve(v); }, (err) => { clearTimeout(timer); reject(err); });
+    });
+  }
+
+  // Memoised. A failed import is cached by the browser for the life of the page, so no URL is tried
+  // twice; reloading the page is the only retry.
+  let threeLoad = null;
+  function loadThree() {
+    if (threeLoad) return threeLoad;
+    threeLoad = (async () => {
+      probeWebGL2();
+      let last = null;
+      for (const url of THREE_URLS) {
+        try {
+          const m = await withTimeout(import(url), THREE_TIMEOUT_MS, 'Loading three.js');
+          if (String(m.REVISION) !== THREE_REVISION || typeof m.WebGLRenderer !== 'function') {
+            throw Object.assign(new Error('Unexpected three.js build (revision ' + m.REVISION + ')'), { code: 'revision' });
+          }
+          return m;
+        } catch (err) {
+          last = err;
+          console.warn('Could not load three.js from ' + url, err);
+        }
+      }
+      // Short and readable: it ends up in a tooltip and in the Signals panel. The details were logged above.
+      throw last && ['timeout', 'revision'].includes(last.code) ? last : Object.assign(new Error('Could not load three.js'), { code: 'load', cause: last });
+    })();
+    return threeLoad;
+  }
+
+  // Reasons not to spend the bytes on 3D unasked (the player can still choose it with the toggle).
+  function threeSkipReason() {
+    const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (c && c.saveData) return 'data saver is on';
+    if (c && /^(slow-2g|2g)$/.test(c.effectiveType || '')) return 'slow connection';
+    return '';
+  }
+
+  // Starts loading three.js once per page. `asked` is true when the player chose 3D with the toggle.
+  function ensureThree(asked) {
+    if (view.status !== 'idle') return;
+    if (settings.renderer === '2d' && !asked) return;
+    const skip = asked ? '' : threeSkipReason();
+    view.reason = skip;
+    if (skip) {
+      updateViewControls();
+      return;
+    }
+    view.status = 'loading';
+    loadThree().then(onThreeReady, (err) => onThreeFailed(describe(err), err));
+    updateViewControls();
+  }
+
+  function describe(err) {
+    return (err && err.message) || 'could not start';
+  }
+
+  function onThreeReady(THREE) {
+    view.three = THREE;
+    if (view.status === 'loading') view.status = 'ready';
+    const asked = view.wantNow;
+    view.wantNow = false;
+    maybeSwapView(asked);
+    updateViewControls();
+  }
+
+  function onThreeFailed(reason, err) {
+    if (view.status === 'failed') return;
+    view.status = 'failed';
+    view.reason = reason;
+    view.wantNow = false;
+    console.warn('3D view unavailable: ' + reason, err || '');
+    if (view.scene) {
+      const dead = view.scene;
+      view.scene = null;
+      try { dead.dispose(); } catch (e) { /* already gone */ }
+    }
+    setViewMode('2d');
+    toast('3D view unavailable. Using the classic view.');
+    updateViewControls();
+  }
+
+  // The scene calls this when it cannot go on: 'context-lost' (it is disposing itself), or
+  // 'slow' / 'emergency' (it stays alive and idle, so the toggle can try again).
+  function onSceneFallback(info) {
+    if (info.reason === 'context-lost') {
+      view.scene = null;
+      view.status = 'failed';
+      view.reason = 'context-lost';
+      console.warn('3D view lost its graphics context');
+      setViewMode('2d');
+      toast('3D view unavailable. Using the classic view.');
+    } else {
+      view.slow = true;
+      view.reason = info.reason === 'emergency' ? 'too slow (stalled)' : 'too slow';
+      console.warn('3D view too slow on this device (' + info.reason + '), using the classic view');
+      setViewMode('2d');
+      toast('3D view is too slow on this device. Using the classic view.');
+    }
+    updateViewControls();
+  }
+
+  function ensureScene() {
+    if (view.scene) return true;
+    if (!view.three) return false;
+    try {
+      view.scene = LF.Scene3D.create(view.three, {
+        canvas: el.world3d,
+        popLayer: el.popLayer,
+        race: S.race,
+        tier: tierParam == null ? undefined : tierParam,
+        lockTier: tierParam != null,
+        reduceMotion,
+        failIfMajorPerformanceCaveat: !view.forced3d,
+        onFallback: onSceneFallback,
+      });
+      return true;
+    } catch (err) {
+      onThreeFailed(describe(err), err);
+      return false;
+    }
+  }
+
+  // Swaps into 3D when it is ready and wanted. On its own only in intro, setup and ready, never in the
+  // middle of a race: three.js arriving later than the countdown means that race is finished in 2D.
+  // `asked` (the toggle) also allows paused and finished.
+  const AUTO_SWAP = { intro: true, setup: true, ready: true };
+  const ASKED_SWAP = { intro: true, setup: true, ready: true, paused: true, finished: true };
+  function maybeSwapView(asked) {
+    if (view.mode === '3d' || !view.three || view.status === 'failed') return;
+    if (settings.renderer === '2d' || (view.slow && !asked)) return;
+    if (!(asked ? ASKED_SWAP : AUTO_SWAP)[S.phase]) return;
+    if (!ensureScene()) return;
+    setViewMode('3d');
+  }
+
+  function setViewMode(mode) {
+    if (mode === view.mode) return;
+    view.mode = mode;
+    if (mode === '3d') {
+      view.shown = false; // the canvas stays hidden until its first frame has drawn
+      view.slow = false;
+      view.reason = '';
+      view.scene.layout();
+    } else {
+      show2d();
+    }
+    updateViewControls();
+  }
+
+  // 3D has drawn its first frame: fade it in, then let go of the 2D layer once the fade is over.
+  function reveal3d() {
+    const c = el.world3d;
+    view.shown = true;
+    c.hidden = false;
+    el.popLayer.hidden = false;
+    view.scene.layout();
+    void c.offsetWidth; // so the opacity change below animates
+    c.classList.add('on');
+    clearTimeout(view.releaseTimer);
+    view.releaseTimer = setTimeout(release2d, 250);
+  }
+
+  function release2d() {
+    if (view.mode !== '3d' || !view.shown || V.released) return;
+    V.released = true;
+    cv.hidden = true;
+    cv.width = 1;
+    cv.height = 1;
+    V.sky = null;
+    V.stands = null;
+    V.grain = null;
+  }
+
+  function show2d() {
+    clearTimeout(view.releaseTimer);
+    view.shown = false;
+    const c = el.world3d;
+    c.classList.remove('on');
+    c.hidden = true;
+    el.popLayer.hidden = true; // the scene only updates its popup nodes while it draws
+    cv.hidden = false;
+    if (V.released || V.stale) { // rebuild what was let go or went out of date under the 3D view
+      V.released = false;
+      V.stale = false;
+      layoutShared();
+      layout2d();
+    }
+  }
+
+  // One object, reused every frame, so the render path allocates nothing of its own.
+  const rctx = {
+    race: null, av: S.av, phase: 'intro', particles: null, popups: null,
+    t: 0, dt: 0, reduceMotion, poseFps: 0, mode: null, sheet: false,
+  };
+  function renderWorld(t, dt) {
+    const sc = view.scene;
+    if (!sc) { render2d(t); return; }
+    rctx.race = S.race;
+    rctx.phase = S.phase;
+    rctx.particles = S.particles;
+    rctx.popups = S.popups;
+    rctx.t = t;
+    rctx.dt = dt;
+    rctx.poseFps = S.poseFps;
+    rctx.mode = S.mode;
+    rctx.sheet = S.phase === 'intro' || !el.results.hidden; // behind a sheet the scene draws at 15 fps
+    if (view.mode !== '3d') { // the scene is kept for the toggle; 2D is what the player sees
+      sc.idle(rctx);
+      render2d(t);
+      return;
+    }
+    if (sc.render(rctx) && !view.shown && view.mode === '3d') reveal3d();
+    // Until 3D has drawn, and if it just gave way to 2D, keep the classic picture going.
+    if (!view.shown || view.mode !== '3d') render2d(t);
+  }
+
+  // ------------------------------------------------- view toggle (chip, radios, V)
+  const viewLocked = () => S.phase === 'countdown' || S.phase === 'running';
+  const canRetry3d = () => view.status === 'failed' && view.reason === 'context-lost' && !view.retried && !!view.three;
+  // What the View controls show as selected: 3D is on, or is what the player will get once it loads.
+  const wants3d = () => view.mode === '3d'
+    || (settings.renderer !== '2d' && view.status !== 'failed' && !view.slow && !(view.status === 'idle' && view.reason));
+
+  function updateViewControls() {
+    const on = wants3d();
+    const dead = view.status === 'failed' && !canRetry3d();
+    const locked = viewLocked();
+    el.btnView.setAttribute('aria-pressed', String(on));
+    el.btnView.disabled = locked || dead;
+    el.btnView.title = dead ? '3D view unavailable: ' + view.reason
+      : canRetry3d() ? 'Try the 3D view again (V)'
+        : on ? 'Switch to the classic side view (V)' : 'Switch to the 3D chase view (V)';
+    for (const b of viewPick) {
+      const is3d = b.dataset.view === '3d';
+      b.setAttribute('aria-checked', String(is3d === on));
+      b.disabled = locked || (dead && is3d);
+      b.title = dead && is3d ? '3D view unavailable: ' + view.reason : '';
+    }
+  }
+
+  function chooseView(want3d) {
+    if (viewLocked()) return;
+    if (want3d) {
+      if (view.status === 'failed') { // one retry after a lost context, with the module already loaded
+        if (!canRetry3d()) return;
+        view.retried = true;
+        view.status = 'ready';
+        view.reason = '';
+      }
+      settings.renderer = 'auto';
+      store.set('renderer', 'auto');
+      view.slow = false;
+      if (view.status === 'idle') {
+        view.wantNow = true;
+        ensureThree(true);
+      } else if (view.status === 'loading') {
+        view.wantNow = true;
+      } else {
+        maybeSwapView(true);
+      }
+    } else {
+      settings.renderer = '2d';
+      store.set('renderer', '2d');
+      view.wantNow = false;
+      setViewMode('2d');
+    }
+    updateViewControls();
+  }
+  function toggleView() { chooseView(!wants3d()); }
+
+  // ------------------------------------------------------------ layout, debounced
+  // resize, orientationchange and visualViewport.resize only mark the layout dirty; frame() applies it
+  // once the size has held for two frames and 250 ms have passed since the last time, and does
+  // nothing if width, height and pixel ratio are what was last applied.
+  const applied = { w: 0, h: 0, dpr: 0 };
+  let layoutDirty = 0;
+  let lastLayoutAt = -1e9;
+  let layoutSeen = '';
+  function markLayoutDirty() { layoutDirty = 2; }
+  function applyLayout(force) {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const dpr = window.devicePixelRatio || 1;
+    if (!force && w === applied.w && h === applied.h && dpr === applied.dpr) return;
+    applied.w = w;
+    applied.h = h;
+    applied.dpr = dpr;
+    layoutShared();
+    if (view.mode === '2d') layout2d();
+    else V.stale = true; // the classic layout is rebuilt if the player switches back
+    if (view.scene && view.mode === '3d') view.scene.layout();
+  }
+  function pollLayout(now) {
+    if (!layoutDirty) return;
+    const sig = window.innerWidth + 'x' + window.innerHeight + '@' + (window.devicePixelRatio || 1);
+    if (sig !== layoutSeen) { layoutSeen = sig; layoutDirty = 2; return; }
+    if (layoutDirty > 1) { layoutDirty--; return; }
+    if (now - lastLayoutAt < 250) return;
+    layoutDirty = 0;
+    lastLayoutAt = now;
+    applyLayout(false);
   }
 
   // ---------------------------------------------------------------- wake lock
@@ -4514,6 +4911,14 @@ kbd {
   el.btnRecal.addEventListener('click', () => {
     if (S.mode === 'camera' && S.phase !== 'intro') enterSetup();
   });
+  el.btnView.addEventListener('click', () => {
+    toggleView();
+    el.btnView.blur(); // Enter and Space belong to the race
+  });
+  viewPick.forEach((b) => b.addEventListener('click', () => {
+    chooseView(b.dataset.view === '3d');
+    b.blur();
+  }));
   document.querySelectorAll('.pick button[data-dist]').forEach((b) => {
     b.addEventListener('click', () => {
       settings.distance = Number(b.dataset.dist);
@@ -4527,6 +4932,12 @@ kbd {
     if (document.visibilityState === 'hidden') {
       if (S.phase === 'running') pauseRace('hidden');
     } else {
+      // Drop what was measured while away: a stalled frame, and a second of pose-rate samples.
+      lastFrame = performance.now();
+      S.poseFps = 0;
+      S.poseFrames = 0;
+      S.poseFpsT = lastFrame;
+      if (view.scene) view.scene.discardTiming();
       if (S.mode) keepAwake();
       if (S.phase === 'paused' && S.pausedReason === 'hidden') {
         if (S.mode === 'manual' || S.framing === 'ok') resumeRace();
@@ -4534,17 +4945,21 @@ kbd {
       }
     }
   });
-  window.addEventListener('resize', resize);
+  window.addEventListener('resize', markLayoutDirty);
+  window.addEventListener('orientationchange', markLayoutDirty);
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', markLayoutDirty);
 
   let lastFrame = performance.now();
   function frame(now) {
     requestAnimationFrame(frame);
+    if (document.hidden) { lastFrame = now; return; } // no pose, no drawing for a tab nobody sees
     const dt = Math.min(0.05, Math.max(0, (now - lastFrame) / 1000));
     lastFrame = now;
     const t = now / 1000;
+    pollLayout(now);
     detectPose(now);
     update(dt, t);
-    render(t);
+    renderWorld(t, dt);
     drawSignals(t);
     if (now - S.poseFpsT > 1000) {
       S.poseFps = (S.poseFrames * 1000) / (now - S.poseFpsT || 1);
@@ -4553,15 +4968,30 @@ kbd {
     }
   }
 
-  resize();
+  applyLayout(true);
+  lastLayoutAt = performance.now();
+  el.btnView.hidden = false;
+  viewPick.forEach((b) => { b.parentElement.hidden = false; });
   syncControls();
   applyThresholds();
   showIntro();
+  updateViewControls();
   requestAnimationFrame(frame);
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { hudCache.dist = null; });
 
-  // Read-only handle for debugging in the console.
-  window.laneFour = { state: S, settings };
+  // On a desktop with a fine pointer (and no data saver) fetch three.js in idle time, so 3D is ready by
+  // the time Start is pressed. Everywhere else it loads on the first Start press.
+  function preloadThree() {
+    if (settings.renderer === '2d' || !(window.matchMedia && window.matchMedia('(pointer: fine)').matches)) return;
+    const go = () => ensureThree(false);
+    if ('requestIdleCallback' in window) window.requestIdleCallback(go, { timeout: 3000 });
+    else setTimeout(go, 1500);
+  }
+  if (document.readyState === 'complete') preloadThree();
+  else window.addEventListener('load', preloadThree, { once: true });
+
+  // Handle for debugging in the console and for the browser tests.
+  window.laneFour = { state: S, settings, view };
 })();
 
 </script>

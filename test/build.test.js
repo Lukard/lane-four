@@ -70,17 +70,20 @@ test('the import map points both CDN hosts at the minified core, for the pinned 
     [jsd + 'three.core.js']: jsd + 'three.core.min.js',
     [cdnjs + 'three.core.js']: cdnjs + 'three.core.min.js',
   });
-  // Once the loader exists in app.js, its module URLs must resolve their
-  // ./three.core.js import to exactly these keys.
+  // The loader's module URLs must resolve their ./three.core.js import to exactly these keys: the
+  // import map is what swaps in the minified core, on each host the loader may use.
   const loader = html.match(/THREE_URLS\s*=\s*\[([^\]]*)\]/);
-  if (loader) {
-    const urls = [...loader[1].matchAll(/'([^']+)'/g)].map((x) => x[1]);
-    assert.ok(urls.length >= 2);
-    for (const u of urls) {
-      assert.ok(u.endsWith('/three.module.min.js'), u);
-      assert.ok(Object.prototype.hasOwnProperty.call(map, u.replace(/three\.module\.min\.js$/, 'three.core.js')), u);
-    }
-  }
+  assert.ok(loader, 'app.js defines THREE_URLS');
+  const urls = [...loader[1].matchAll(/'([^']+)'/g)].map((x) => x[1]);
+  assert.deepStrictEqual(urls, [jsd + 'three.module.min.js', cdnjs + 'three.module.min.js'], 'jsDelivr first, then cdnjs');
+  assert.deepStrictEqual(urls.map((u) => u.replace(/three\.module\.min\.js$/, 'three.core.js')).sort(), Object.keys(map).sort());
+});
+
+test('the loader checks the revision that matches the pinned version', () => {
+  const rev = html.match(/const THREE_REVISION = '(\d+)'/);
+  assert.ok(rev, 'app.js defines THREE_REVISION');
+  assert.equal(rev[1], VERSION.split('.')[1], 'THREE_REVISION is the minor of the pinned version');
+  assert.ok(html.includes("const THREE_VERSION = '" + VERSION + "'"));
 });
 
 test('three is pinned to one exact version', () => {
