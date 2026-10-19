@@ -17,19 +17,22 @@ then every 35 m).
   on push, so run `npm run build` and commit `docs/index.html` with any `src/` change.
 - The repo uses a local git identity (GitHub noreply email), not the global work address, because
   the repo is public. Keep it that way.
-- 3D chase view built 2026-10-19 on the local branch `3d`: not pushed and not merged, so Pages still
-  serves the 2D-only page from `main`. The 2D renderer stays as a toggle and as the automatic
+- 3D chase view built 2026-10-19 and merged into `main` (fast-forward to d6a83e6), so Pages serves it
+  at the same URL (live page verified byte-identical to `docs/index.html`; opened from the real URL
+  it comes up as 3D on three.js r186 from jsDelivr, no console errors). The 2D renderer stays as a
+  toggle (HUD `3D` chip, key `V`, the intro View choice, or `?renderer=2d`) and as the automatic
   fallback; `src/core.js` (the game rules) is unchanged.
-- 3D verified only in headless Chromium with SwiftShader: 98 unit tests, browser runs B, C, D and E
+- 3D verified in headless Chromium with SwiftShader: 98 unit tests, browser runs B, C, D and E
   (strict; B and C as 3D at the locked lowest tier and as 2D), and the 2D canvas matching the pre-3D
-  build in 89 of 89 checkpoints of a fake-clock keys run at 1280x800 and at 390x844@2. Never run on a
-  real GPU, a phone or iOS Safari. Frame cost, fill rate, shader compile time and every quality-tier
-  number are untested starting values. The real fonts (Big Shoulders Display, Doto) never loaded in
-  any 3D check.
-- Next step: open the Pages URL on a phone and try it with a real body in a real room. Then run the
-  `3d` branch on an iPhone and a mid-range Android for 3 minutes in camera mode: pose fps >= 24 and
-  rAF p95 <= 36 ms at the settled tier, or an automatic downgrade or 2D fallback with the race still
-  completing (also in Low Power Mode).
+  build in 89 of 89 checkpoints of a fake-clock keys run at 1280x800 and at 390x844@2. Once on a
+  desktop GPU (Apple M1 Pro, in-app browser): tier T0, 60 fps, p95 19 ms, 23 draw calls. Never run on
+  a phone or iOS Safari, so frame cost next to MediaPipe, fill rate and every quality-tier number are
+  untested starting values. Headless runs stub the fonts; the painted track glyphs (SQUAT, lane
+  numbers) were not inspected in the real Big Shoulders Display or Doto.
+- Next step: open the Pages URL on a phone and try it with a real body in a real room. Then run it on
+  an iPhone and a mid-range Android for 3 minutes in camera mode: pose fps >= 24 and rAF p95 <= 36 ms
+  at the settled tier, or an automatic downgrade or 2D fallback with the race still completing (also
+  in Low Power Mode). If 3D hurts tracking on a phone, the chip, `V` or `?renderer=2d` switch it off.
 
 ## Commands
 
@@ -153,4 +156,10 @@ then every 35 m).
   thermals. The wide (phone landscape) rig is the tightest: hurdle about 25 px at 14 m. From directly
   behind, the gait reads flat. Late clears can look marginal against the 0.914 m board because
   `core.js` clears at 0.72 m (the rules were left alone on purpose).
+- `Geom.QualityController` takes the device's own first 3 s as its frame-rate target, so it cannot
+  tell that a phone is slow from the very first frame (a steady 25 fps from the start never steps a
+  tier down). It does catch a device that slows later, a slow pose model in camera mode (poseFps
+  below 22 and below 0.8x the 2D baseline), and the emergency floor of under 12 fps. Settle this with
+  real phone data before adding an absolute rule.
+- The View choice made the intro card taller: on a 390x844 phone the privacy note needs a small scroll.
 - Only one exercise loop. No music; sound is WebAudio synth plus speechSynthesis.
