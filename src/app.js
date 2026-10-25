@@ -1594,6 +1594,7 @@
       reduceMotion,
       onContextLost: hooks.onContextLost,
       onContextRestored: hooks.onContextRestored,
+      onRestoreFailed: hooks.onRestoreFailed,
       onFallback: hooks.onFallback,
     });
   }
@@ -1605,7 +1606,7 @@
   // whether a running race is held.
   function syncView() {
     if (view.mode === '2d') show2d();
-    else if (view.shown) el.world3d.classList.toggle('on', !view.lost); // a lost canvas is blank or glitched: show the night instead
+    else if (view.shown && view.lost) el.world3d.classList.remove('on'); // a lost canvas is blank or glitched: show the night instead (it fades back in from renderWorld, after a frame)
     syncNotice();
     syncStart();
     syncGraphicsHold();
@@ -1718,6 +1719,7 @@
     }
     if (!drew) return;
     if (!view.shown) reveal3d();
+    else if (!el.world3d.classList.contains('on')) el.world3d.classList.add('on'); // after a restore, once a frame has been drawn
     vm.drawn();
   }
 

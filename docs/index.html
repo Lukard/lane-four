@@ -1368,10 +1368,59 @@ kbd {
     }
   }
 
+  const SHAKE_T = 0.35;
+  const SHAKE_AMP = 0.10;
+  const SHAKE_HZ = 7;
+
+  // ----------------------------------------------------------- chase camera (no THREE; Scene3D re-exports it)
+  class ChaseCam {
+    constructor() {
+      this.rig = RIGS.standard;
+      this.sol = solveRig(this.rig, 0);
+      this.s = 0; // speed zoom-out, 0..1
+      this.yS = 0; // smoothed runner height
+      this.left = 0; // seconds of hit shake left
+      this.x = 0;
+      this.y = 3.4;
+      this.z = 0;
+      this.pitch = this.sol.pitch;
+    }
+    setRig(rig) {
+      this.rig = rig;
+      solveRig(rig, this.s, this.sol);
+      this.pitch = this.sol.pitch;
+    }
+    hit() { this.left = SHAKE_T; }
+    // snap: jump every smoothed value to where it is heading (new race, first frame, restart).
+    update(dt, r, av, phase, reduce, snap) {
+      const vEff = phase === 'paused' ? 0 : r.v;
+      const tgt = reduce ? 0 : clamp(vEff / 9.5, 0, 1);
+      this.s = snap || reduce ? tgt : approach(this.s, tgt, dt, 0.6);
+      this.yS = snap ? r.y : approach(this.yS, r.y, dt, reduce ? 0.25 : 0.12);
+      if (snap || reduce) this.left = 0;
+      const sol = solveRig(this.rig, this.s, this.sol);
+      let y = sol.height + 0.4 * this.yS - 0.25 * av.crouch;
+      let z = 0;
+      if (!reduce) {
+        y += 0.02 * av.gait * Math.cos(4 * Math.PI * av.phase);
+        if (this.left > 0) {
+          const el = SHAKE_T - this.left, k = 1 - el / SHAKE_T, amp = SHAKE_AMP * k * k, w = 2 * Math.PI * SHAKE_HZ * el;
+          y += amp * Math.sin(w);
+          z = amp * Math.cos(w);
+          this.left = Math.max(0, this.left - dt);
+        }
+      }
+      this.x = r.x - sol.back; // never lags: a hit drops v to 35% in one step
+      this.y = Math.max(3.15, y); // the finish board top is 3.0 m
+      this.z = z;
+      this.pitch = sol.pitch;
+    }
+  }
+
   Object.assign(LF, {
     Geom: {
       makePose, runnerPose, easeOutBack, tipAngle, laneZ, farScale, approach,
-      RIGS, rigFor, solveRig, projectPx, TIERS, pixelRatio, QualityController,
+      RIGS, rigFor, solveRig, projectPx, TIERS, pixelRatio, QualityController, ChaseCam,
     },
   });
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -1381,7 +1430,7 @@ kbd {
 /* Lane Four 3D assets: the procedural pieces the 3D world is made of. Texture painters
    (each draws on a 2D canvas context), the glyph atlas, the LED board face, a vertex-colour
    mesh builder and the fixed geometries (sky, stars, chevron, hurdle, floodlight head).
-   Attaches LaneFour.Assets3D; world3d.js is the only user. Nothing here touches the
+   Attaches LaneFour.Assets3D; world3d.js and scene3d.js are the only users. Nothing here touches the
    DOM itself (painters take a context), and THREE is always passed in. */
 (function (root) {
   'use strict';
@@ -1559,6 +1608,22 @@ kbd {
     g.fillText(str, 256, 68);
   }
 
+  // ------------------------------------------------- texture canvases after a lost graphics process
+  // A GPU process crash empties the 2D canvases behind CanvasTextures along with the WebGL context (measured with a
+  // real crash; WEBGL_lose_context does not). Every canvas is painted opaque over its whole face, so a transparent
+  // pixel at either probe point means the browser dropped it. A canvas that cannot be read cannot vouch for itself.
+  const INTACT_AT = [[0.5, 0.5], [0.97, 0.97]];
+  function canvasIntact(c) {
+    try {
+      return INTACT_AT.every(([fx, fy]) => c.getContext('2d').getImageData(Math.floor((c.width - 1) * fx), Math.floor((c.height - 1) * fy), 1, 1).data[3] !== 0);
+    } catch (e) { return false; }
+  }
+  const texturesIntact = (list) => list.every((t) => canvasIntact(t.image));
+  // Paints each canvas again with the painter kept in t.userData.draw, and marks the texture for upload.
+  function repaintTextures(list) {
+    for (const t of list) { t.userData.draw(t.image.getContext('2d')); t.needsUpdate = true; }
+  }
+
   // --------------------------------------------------------------- geometry
   const basis = (T, g, x, y, z) => g.applyMatrix4(new T.Matrix4().makeBasis(x, y, z));
   const V = (T, x, y, z) => new T.Vector3(x, y, z);
@@ -1634,7 +1699,7 @@ kbd {
     },
   };
 
-  Object.assign(LF, { Assets3D: { FONT_DISPLAY, FONT_LED, AMBER, ATLAS, seeded, rgb, Mesher, painters, bakeAtlas, drawLed, geo } });
+  Object.assign(LF, { Assets3D: { FONT_DISPLAY, FONT_LED, AMBER, ATLAS, seeded, rgb, Mesher, painters, bakeAtlas, drawLed, canvasIntact, texturesIntact, repaintTextures, geo } });
 })(typeof window !== 'undefined' ? window : globalThis);
 
 </script>
@@ -1675,6 +1740,8 @@ kbd {
    world.cheer(kind)  'clear' flashes the stands to 0.6, 'star' and 'finish' to 1.0 (never
                    lowers a stronger flash); other kinds are ignored. Decays with tau 0.5 s.
    world.rebake()  redraws the glyph atlas and LED board; runs by itself when the fonts load.
+   world.textures  the CanvasTextures; each has userData.draw, the painter of its canvas (the atlas and the LED
+                   face are painted by rebake()). For Assets3D.repaintTextures / texturesIntact, after a lost context.
    world.glowTexture  opaque greyscale radial gradient for additive blending, shared so the
                    runner's charge glow needs no texture of its own.
    world.stats()   { drawCalls, triangles, geometries, textures, textureMB, tier } of what is visible.
@@ -1721,7 +1788,7 @@ kbd {
       draw(c.getContext('2d'));
       const t = new T.CanvasTexture(c);
       if (!linear) t.colorSpace = T.SRGBColorSpace;
-      texList.push(t);
+      t.userData.draw = draw; texList.push(t);
       return t;
     }
     const tTrack = makeTex(512, 128, A.painters.track);
@@ -2131,7 +2198,7 @@ kbd {
       }
     }
 
-    return { root: rootG, sky: skyG, update, setRace, setTier, cheer, rebake, stats, dispose, glowTexture: tGlow };
+    return { root: rootG, sky: skyG, update, setRace, setTier, cheer, rebake, textures: texList, stats, dispose, glowTexture: tGlow };
   }
 
   Object.assign(LF, { World3D: { build } });
@@ -2501,7 +2568,12 @@ kbd {
      onContextLost      function({ cause }) the graphics context is lost ('event' for webglcontextlost, 'poll' when
                         render() saw it first, 'visibility' when the tab became visible and found it lost). The scene
                         stays alive on its canvas, draws nothing (render() returns false) and waits for a restore.
-     onContextRestored  function() the context is back and three.js has re-initialised itself: render() draws again
+     onContextRestored  function() the context is back, three.js has re-initialised itself and the textures have been
+                        painted again and read back: render() draws again
+     onRestoreFailed    function({ reason }) the context came back but the picture cannot be trusted (the texture canvases
+                        are blank, which a real GPU process crash causes): the scene stays down, draws nothing, and the
+                        app is to dispose it and create a new one. Called instead of onContextRestored, or, if the first
+                        frame after it finds the textures blank, after it.
      onFallback    function({ reason, message, tier, emergency }) called once when the quality controller gives up
                    on speed: reason 'slow' or 'emergency'. The scene carries on drawing; what to do is the app's call.
      dpr, coarse, storage   overrides for devicePixelRatio, (pointer:coarse) and localStorage (tests)
@@ -2526,61 +2598,14 @@ kbd {
   if (!LF || !LF.Geom || !LF.World3D || !LF.Actors3D) throw new Error('scene3d.js needs core.js, geom.js, assets3d.js, world3d.js and actors3d.js loaded first');
   const { clamp } = LF;
   const G = LF.Geom;
-  const { approach, TIERS, RIGS } = G;
+  const { TIERS, RIGS, ChaseCam } = G;
+  const A = LF.Assets3D;
 
   const CLEAR = 0x1b2f5c;
-  const SHAKE_T = 0.35;
-  const SHAKE_AMP = 0.10;
-  const SHAKE_HZ = 7;
   const STORE_KEY = 'lanefour.tier3d';
   const STORE_MS = 14 * 24 * 3600 * 1000;
   const STABLE_MS = 30000; // a tier that held this long while racing is remembered
   const RING = 300;
-
-  // ----------------------------------------------------------- chase camera (no THREE)
-  class ChaseCam {
-    constructor() {
-      this.rig = RIGS.standard;
-      this.sol = G.solveRig(this.rig, 0);
-      this.s = 0; // speed zoom-out, 0..1
-      this.yS = 0; // smoothed runner height
-      this.left = 0; // seconds of hit shake left
-      this.x = 0;
-      this.y = 3.4;
-      this.z = 0;
-      this.pitch = this.sol.pitch;
-    }
-    setRig(rig) {
-      this.rig = rig;
-      G.solveRig(rig, this.s, this.sol);
-      this.pitch = this.sol.pitch;
-    }
-    hit() { this.left = SHAKE_T; }
-    // snap: jump every smoothed value to where it is heading (new race, first frame, restart).
-    update(dt, r, av, phase, reduce, snap) {
-      const vEff = phase === 'paused' ? 0 : r.v;
-      const tgt = reduce ? 0 : clamp(vEff / 9.5, 0, 1);
-      this.s = snap || reduce ? tgt : approach(this.s, tgt, dt, 0.6);
-      this.yS = snap ? r.y : approach(this.yS, r.y, dt, reduce ? 0.25 : 0.12);
-      if (snap || reduce) this.left = 0;
-      const sol = G.solveRig(this.rig, this.s, this.sol);
-      let y = sol.height + 0.4 * this.yS - 0.25 * av.crouch;
-      let z = 0;
-      if (!reduce) {
-        y += 0.02 * av.gait * Math.cos(4 * Math.PI * av.phase);
-        if (this.left > 0) {
-          const el = SHAKE_T - this.left, k = 1 - el / SHAKE_T, amp = SHAKE_AMP * k * k, w = 2 * Math.PI * SHAKE_HZ * el;
-          y += amp * Math.sin(w);
-          z = amp * Math.cos(w);
-          this.left = Math.max(0, this.left - dt);
-        }
-      }
-      this.x = r.x - sol.back; // never lags: a hit drops v to 35% in one step
-      this.y = Math.max(3.15, y); // the finish board top is 3.0 m
-      this.z = z;
-      this.pitch = sol.pitch;
-    }
-  }
 
   // ------------------------------------------------------------------- start tier
   const tierKey = (dpr, w, h) => (Math.round(dpr * 100) / 100) + '|' + Math.round(Math.min(w, h));
@@ -2663,7 +2688,7 @@ kbd {
       retireCanvas();
       throw e;
     }
-    let world = null, actors = null, dead = false, failed = null, lost = false;
+    let world = null, actors = null, dead = false, failed = null, lost = false, checkPicture = false;
     const scene = new T.Scene();
     const camera = new T.PerspectiveCamera(50, 1, 0.3, tier.far);
     camera.rotation.order = 'YXZ';
@@ -2721,22 +2746,39 @@ kbd {
       markLost('event');
     }
     // Registered after three.js's own listener, so by now it has re-initialised its state: buffers and
-    // textures are rebuilt from what the objects still hold on the next render.
+    // textures are rebuilt from what the objects still hold on the next render. What they hold can itself be
+    // gone: the 2D canvases behind the textures are emptied when the GPU process dies, so they are painted again,
+    // and the picture is not trusted until they have been read back (see pictureBlank).
     function onRestored() {
       if (dead || !lost) return;
-      lost = false;
       try {
         renderer.setClearColor(CLEAR); // three.js starts its background state again at black
+        A.repaintTextures(world.textures);
+        world.rebake(); // the glyph atlas and the LED face, and the labels that follow the atlas
         actors.prewarm(true); // and programs compile lazily: do it now, not in the middle of the next frame
         renderer.compile(scene, camera);
         actors.prewarm(false);
-      } catch (e) { /* the next frame says so */ }
+      } catch (e) { /* the check below says so */ }
       ctl.clear();
       nextDraw = 0;
       accDt = 0;
       lastCall = -1;
+      if (pictureBlank()) { restoreFailed('the textures are blank after the restore'); return; }
+      lost = false;
+      checkPicture = true; // and once more on the first frame, before it is drawn
       if (typeof o.onContextRestored === 'function') {
         try { o.onContextRestored(); } catch (e) { /* the app's problem */ }
+      }
+    }
+    function pictureBlank() {
+      try { return !A.texturesIntact(world.textures); } catch (e) { return true; }
+    }
+    // The restored context cannot show the stadium. The scene stays down (render() draws nothing, so a blank
+    // picture is never shown) and says so; the app throws it away and makes a new one on a fresh canvas.
+    function restoreFailed(reason) {
+      lost = true;
+      if (typeof o.onRestoreFailed === 'function') {
+        try { o.onRestoreFailed({ reason }); } catch (e) { /* the app's problem */ }
       }
     }
     canvas.addEventListener('webglcontextlost', onLost);
@@ -2824,6 +2866,10 @@ kbd {
     function render(ctx) {
       if (dead || lost) return false;
       if (gl.isContextLost()) { markLost('poll'); return false; }
+      if (checkPicture) { // the first frame after a restore: nothing is drawn from a blank picture
+        checkPicture = false;
+        if (pictureBlank()) { restoreFailed('the textures are blank on the first frame after the restore'); return false; }
+      }
       const t = ctx.t, tMs = t * 1000;
       nowMs = tMs;
       if (!visible) { // the first frame
@@ -2996,7 +3042,8 @@ kbd {
      classic        true for ?renderer=2d: nothing is loaded and the status is 'off'
      loadThree()    Promise of the three.js namespace; rejects with an Error whose message is the player-facing reason
      createScene(three, hooks)   the scene, or throws. hooks = { tier, onContextLost({ cause }), onContextRestored(),
-                                 onFallback({ reason }) }; tier is a number to start at (after a re-creation) or null
+                                 onRestoreFailed({ reason }), onFallback({ reason }) }; tier is a number to start at
+                                 (after a re-creation) or null
      disposeScene(scene)         default scene.dispose()
      hasWebGL2()    false: do not even try (default: the WebGL2RenderingContext global exists)
      isHidden()     true while the tab is hidden (default document.hidden)
@@ -3026,9 +3073,11 @@ kbd {
 
    Context loss is recovered in place: the scene keeps its canvas and stops drawing, the app pauses a running
    race, and a restore resumes everything. If no restore arrives within 3 s, or the tab becomes visible with a
-   lost context, the scene is disposed and made again on a fresh canvas. That is an automatic attempt; three are
-   allowed, with a backoff, and the counter resets after 30 s of stable rendering. The fourth failure is a hard
-   one. The same attempts cover a scene that cannot be created (one null getContext is often transient). */
+   lost context, or the restore comes but the scene finds its textures blank (onRestoreFailed: a real GPU
+   process crash empties the 2D canvases behind them), the scene is disposed and made again on a fresh canvas.
+   That is an automatic attempt; three are allowed, with a backoff, and the counter resets after 30 s of stable
+   rendering. The fourth failure is a hard one. The same attempts cover a scene that cannot be created (one null
+   getContext is often transient). */
 (function (root) {
   'use strict';
   const LF = root.LaneFour || (root.LaneFour = {});
@@ -3109,6 +3158,7 @@ kbd {
         tier: lastTier,
         onContextLost: (info) => contextLost(token, info),
         onContextRestored: () => contextRestored(token),
+        onRestoreFailed: (info) => restoreFailed(token, info),
         // The quality controller still gives up on speed in this build. Slow is never a reason to leave 3D.
         onFallback: (info) => { if (token === gen) log('speed-fallback-ignored', info && info.reason); },
       };
@@ -3191,6 +3241,17 @@ kbd {
       log('context-restored', 'in place');
       stableSince = -1;
       set(view.shown ? 'ready' : 'loading', '');
+    }
+
+    // The context came back but the scene cannot show the stadium (its texture canvases are blank, as after a real
+    // GPU process crash). No point waiting: make a new scene now. This is an automatic attempt like any other.
+    function restoreFailed(token, info) {
+      if (token !== gen || !view.scene || view.status === 'failed') return;
+      const why = (info && info.reason) || 'the restored picture is blank';
+      log('restore-failed', why);
+      view.lost = true; // not drawable, whether or not the restore was reported first
+      restoreTimer = stop(restoreTimer);
+      recreate(why);
     }
 
     function onVisible() {
@@ -4865,6 +4926,7 @@ kbd {
       reduceMotion,
       onContextLost: hooks.onContextLost,
       onContextRestored: hooks.onContextRestored,
+      onRestoreFailed: hooks.onRestoreFailed,
       onFallback: hooks.onFallback,
     });
   }
@@ -4876,7 +4938,7 @@ kbd {
   // whether a running race is held.
   function syncView() {
     if (view.mode === '2d') show2d();
-    else if (view.shown) el.world3d.classList.toggle('on', !view.lost); // a lost canvas is blank or glitched: show the night instead
+    else if (view.shown && view.lost) el.world3d.classList.remove('on'); // a lost canvas is blank or glitched: show the night instead (it fades back in from renderWorld, after a frame)
     syncNotice();
     syncStart();
     syncGraphicsHold();
@@ -4989,6 +5051,7 @@ kbd {
     }
     if (!drew) return;
     if (!view.shown) reveal3d();
+    else if (!el.world3d.classList.contains('on')) el.world3d.classList.add('on'); // after a restore, once a frame has been drawn
     vm.drawn();
   }
 

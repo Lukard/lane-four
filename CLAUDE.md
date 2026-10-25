@@ -34,12 +34,20 @@ then every 35 m).
   fetched three.js only at Start (race 1 in 2D, later races swapped to 3D), the quality controller and
   the scene gave up to 2D on false positives, a lost graphics context was never restored, and the toggle
   saved `2d` with no visible change. Now 3D is the only renderer and the view never swaps (see "3D view,
-  and why"). Verified in headless Chromium with SwiftShader: 123 unit tests; browser runs B, C (3D, late
-  three.js, 2D), D with D2, and E, 265 checks, all passing; a fuzz of 60 random 12-step sequences on
-  phone, iPad and desktop viewports (three.js on time, late or blocked; loss, restore, hidden tab,
-  resize, restart; keys mode) found no violated invariant, and the same fuzz flags a build without the
-  tab-visible handler in 8 of 60. Not verified: a real phone or iOS Safari, a real GPU reset (loss and
-  restore are simulated with `WEBGL_lose_context`, a null `getContext` with a patched call), camera mode
+  and why"). The first review of it found one real defect: after a real GPU process crash the in-place
+  restore said `ready` while every textured surface was black, because the crash empties the 2D canvases
+  behind the textures and `WEBGL_lose_context` (the emulated loss) does not. Fixed: the textures are painted
+  again on every restore and read back before anything is drawn (see "A restore is verified").
+  Verified in headless Chromium with SwiftShader: 129 unit tests; browser runs B, C (3D, late three.js, 2D),
+  D with D2, and E, 311 checks, all passing, including a real GPU process crash (CDP) at the intro on a
+  desktop and in a race on a phone, which fails (5 colours, black track pixel) on a build without the fix.
+  A one-off fuzz of 42 random 12-step page sequences (phone, iPad and desktop; three.js on time, late or
+  blocked; loss, restore, emptied textures, one real GPU crash, hidden tab, resize, restart; keys mode) with
+  a probe of the final picture found no violation, and flagged 15 of the same 42 on a build without the fix.
+  The fuzz scripts live in a scratch folder, not in the repo, so that result cannot be reproduced from here.
+  Measured in headless Chromium: WebGL2 is gone after the third GPU crash in one browser session (and the
+  browser closes after more), so a test may crash the GPU process once per browser. Not verified: a real phone or iOS Safari, a
+  real GPU reset on a device (headless SwiftShader only; a null `getContext` is a patched call), camera mode
   with a lost context. Stage 2 (the quality controller) is not done.
 - Next step: open the Pages URL on a phone and try it with a real body in a real room. Then run it on
   an iPhone and a mid-range Android for 3 minutes in camera mode: pose fps >= 24 and rAF p95 <= 36 ms
@@ -92,7 +100,8 @@ then every 35 m).
 ## 3D view, and why
 
 - Chase camera behind the runner, one of three rigs by aspect (portrait under 1.0, standard under
-  1.9, wide) in `Geom.RIGS`. Pitch is re-solved every frame to keep the feet on a fixed screen row.
+  1.9, wide) in `Geom.RIGS`; the camera itself is `Geom.ChaseCam` (no THREE; `Scene3D.ChaseCam` re-exports it).
+  Pitch is re-solved every frame to keep the feet on a fixed screen row.
   Camera x is exactly `r.x - back`, never smoothed, because a hit drops speed to 35% in one step.
 - Axes: three X = race x, Y up, Z = minus race z (one negation keeps left on the left, infield on
   screen-left). The mirrored Z is the likeliest place for a bug. Unlit `MeshBasicMaterial`, fog,
@@ -119,7 +128,9 @@ then every 35 m).
   buttons are disabled saying "Loading stadium…" (or "Restoring graphics…"). The 3D canvas fades in once
   its first frame has drawn.
 - Hard failures, and only these, show the classic view: no WebGL2 API (at once), three.js load error or
-  12 s timeout on both hosts, `create()` failing on every automatic attempt, or the context lost for the
+  12 s timeout on both hosts (`THREE_TIMEOUT_MS`, per host, around the whole `import()` graph: on a very slow
+  link Start says "Loading stadium…" for up to about 24 s before the failure, and Reload is the retry; kept
+  as it was, raising it is one constant), `create()` failing on every automatic attempt, or the context lost for the
   fourth time in a stable spell. A hard failure shows `#notice` with the reason and a Reload button (it
   stays), and the race goes on in 2D. One null `getContext` is transient: `create()` swaps in a fresh
   canvas and the machine retries after 0.4 s, 1.2 s and 2.8 s before it counts.
@@ -132,6 +143,17 @@ then every 35 m).
   after 30 s of steady drawing. More than five losses in a stable spell also go the re-creation way,
   so a flapping context cannot loop forever. A scene whose `render()` throws three frames in a row counts
   as lost.
+- A restore is verified, not assumed. A real GPU process crash (CDP `Browser.crashGpuProcess`) empties every
+  2D canvas behind the `CanvasTexture`s at the instant of the loss (measured: 6 of 6 canvases from 100% to 0%
+  non-empty, 4 ms after `webglcontextlost`); `WEBGL_lose_context` never does, which is why the emulated loss
+  alone hid this. Left alone, three.js re-uploads blanks and the stadium comes back black while the state says
+  `ready`. So `onRestored` in `scene3d.js` calls `Assets3D.repaintTextures(world.textures)` (every painter
+  again, `needsUpdate`; each texture keeps its painter in `userData.draw`), `world.rebake()` (the atlas, the LED
+  face, the labels) and `Assets3D.texturesIntact(world.textures)` (two 1 px alpha reads per canvas: each canvas is opaque
+  over its whole face when painted); blank means the scene stays down and calls `onRestoreFailed`, and the
+  same check runs once more on the first frame before it is drawn. `ViewLife.restoreFailed` then re-creates
+  the scene at once (an automatic attempt, not the 3 s wait). `app.js` keeps the 3D canvas faded out from
+  the loss until `renderWorld` has drawn a frame, so a blank picture is never shown.
 - Layout: `resize`, `orientationchange` and `visualViewport.resize` only mark it dirty; `frame()`
   applies it after two stable frames and 250 ms. Popups are six pooled DOM nodes in `#popLayer`.
 - `frame()` returns early while the tab is hidden: no pose detection, no drawing.
@@ -171,14 +193,20 @@ then every 35 m).
   raises both hands, jogs at 170 spm and squats from 5.5 m to 2.9 m before each hurdle.
 - `test/viewlife.test.js` drives the state machine with a fake clock and scenes, including 400 random
   sequences with invariants (3D unless failed, one live scene, ready means drawing, a hard failure
-  leaves no timer behind).
-- `test/browser_test.py`: B and C are 3D at the intro with no 2D phase (C on a phone with a 2g Save-Data
+  leaves no timer behind). `test/assets3d.test.js` and `test/world3d.test.js` check `repaintTextures()` and
+  `texturesIntact()` with canvases that can be emptied the way a GPU crash empties them.
+- `test/browser_test.py` is only the runner; the runs are in `test/browser_tests/` (`run_a.py` to `run_e.py`,
+  `common.py`, `probes.py`), each under 500 lines. In them: B and C are 3D at the intro with no 2D phase (C on a phone with a 2g Save-Data
   connection and a stale saved `2d`), no View controls, no storage writes; C `late` holds three.js back
   (Start disabled saying Loading stadium, race 1 and Race again in 3D); D aborts every three.js URL
   (persistent notice with Reload, playable 2D race, Signals line says why), D2 has no WebGL2 or a
   `getContext` that always returns null; E is context loss (in place in every phase, paused and resumed
   in a race, re-created on a fresh canvas, hidden tab, after a speed fallback, one transient
-  `getContext` failure, repeated loss ending in the hard failure). The 3D runs assert probe pixels, draw
+  `getContext` failure, repeated loss ending in the hard failure, texture canvases emptied before a restore
+  (repainted in place; or, with the repaint disabled, or blank only on the first frame, re-created at once),
+  and a real GPU process crash at the intro on a desktop and in a race on a phone, checked with `probe()`
+  for the red track and `Assets3D.texturesIntact()`; a page-side watcher fails any frame where the 3D canvas is
+  visible while the context is lost or the scene is gone). The 3D runs assert probe pixels, draw
   calls and triangles, flat geometry and texture counts, camera x, the next hurdle's size at 14 m and
   the wide rig after rotating. E keeps to five losses per page in 30 s (more is re-created by design).
 

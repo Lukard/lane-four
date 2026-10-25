@@ -1,7 +1,7 @@
 /* Lane Four 3D assets: the procedural pieces the 3D world is made of. Texture painters
    (each draws on a 2D canvas context), the glyph atlas, the LED board face, a vertex-colour
    mesh builder and the fixed geometries (sky, stars, chevron, hurdle, floodlight head).
-   Attaches LaneFour.Assets3D; world3d.js is the only user. Nothing here touches the
+   Attaches LaneFour.Assets3D; world3d.js and scene3d.js are the only users. Nothing here touches the
    DOM itself (painters take a context), and THREE is always passed in. */
 (function (root) {
   'use strict';
@@ -179,6 +179,22 @@
     g.fillText(str, 256, 68);
   }
 
+  // ------------------------------------------------- texture canvases after a lost graphics process
+  // A GPU process crash empties the 2D canvases behind CanvasTextures along with the WebGL context (measured with a
+  // real crash; WEBGL_lose_context does not). Every canvas is painted opaque over its whole face, so a transparent
+  // pixel at either probe point means the browser dropped it. A canvas that cannot be read cannot vouch for itself.
+  const INTACT_AT = [[0.5, 0.5], [0.97, 0.97]];
+  function canvasIntact(c) {
+    try {
+      return INTACT_AT.every(([fx, fy]) => c.getContext('2d').getImageData(Math.floor((c.width - 1) * fx), Math.floor((c.height - 1) * fy), 1, 1).data[3] !== 0);
+    } catch (e) { return false; }
+  }
+  const texturesIntact = (list) => list.every((t) => canvasIntact(t.image));
+  // Paints each canvas again with the painter kept in t.userData.draw, and marks the texture for upload.
+  function repaintTextures(list) {
+    for (const t of list) { t.userData.draw(t.image.getContext('2d')); t.needsUpdate = true; }
+  }
+
   // --------------------------------------------------------------- geometry
   const basis = (T, g, x, y, z) => g.applyMatrix4(new T.Matrix4().makeBasis(x, y, z));
   const V = (T, x, y, z) => new T.Vector3(x, y, z);
@@ -254,5 +270,5 @@
     },
   };
 
-  Object.assign(LF, { Assets3D: { FONT_DISPLAY, FONT_LED, AMBER, ATLAS, seeded, rgb, Mesher, painters, bakeAtlas, drawLed, geo } });
+  Object.assign(LF, { Assets3D: { FONT_DISPLAY, FONT_LED, AMBER, ATLAS, seeded, rgb, Mesher, painters, bakeAtlas, drawLed, canvasIntact, texturesIntact, repaintTextures, geo } });
 })(typeof window !== 'undefined' ? window : globalThis);

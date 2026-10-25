@@ -6,8 +6,8 @@ MediaPipe Pose Landmarker (lite) runs in the browser, and video never leaves the
 ## Layout
 
 - `src/core.js`: pose signals, step/squat/hands-up detectors, race simulation (no DOM)
-- `src/geom.js`: runner pose, chase-camera rigs and projection, quality tiers and controller (no DOM)
-- `src/assets3d.js`, `src/world3d.js`: the 3D stadium: procedural textures, track, stands, hurdles, finish
+- `src/geom.js`: runner pose, chase-camera rigs, the chase camera itself, projection, quality tiers and controller (no DOM)
+- `src/assets3d.js`, `src/world3d.js`: the 3D stadium: procedural textures (and the check that they survived a lost context), track, stands, hurdles, finish
 - `src/actors3d.js`, `src/scene3d.js`: the 3D runner, particles and popups; the WebGL renderer, chase camera, quality tiers, context loss events
 - `src/viewlife.js`: the view lifecycle as a state machine (loading, ready, restoring a lost context, hard failure; no DOM)
 - `src/app.js`: camera, MediaPipe, game loop, the classic 2D canvas view (hard failure and `?renderer=2d` only), the three.js loader, the page's side of the view lifecycle, UI
@@ -16,7 +16,7 @@ MediaPipe Pose Landmarker (lite) runs in the browser, and video never leaves the
 - `test/core.test.js`: detector and race tests on synthetic pose sequences (`test/synth.js`)
 - `test/geom.test.js`, `test/assets3d.test.js`, `test/world3d.test.js`, `test/actors3d.test.js`, `test/scene3d.test.js`, `test/viewlife.test.js`, `test/build.test.js`: unit tests for the 3D modules, the view lifecycle and the build (no GPU)
 - `test/fake-vision.js`: stand-in for MediaPipe that plays the game with a scripted body
-- `test/browser_test.py`: headless Chromium runs of the whole page: 3D, a late three.js, hard failures, context loss, and `?renderer=2d`
+- `test/browser_test.py`, `test/browser_tests/`: headless Chromium runs of the whole page (the runner, and one module per run): 3D, a late three.js, hard failures, context loss including a real GPU process crash, and `?renderer=2d`
 
 ## Commands
 
@@ -63,17 +63,26 @@ choice of view, and nothing swaps between 3D and 2D for speed, connection, data 
   override, never saved). Hard failures: three.js cannot load from either CDN host (or times out), WebGL2 is
   missing, the scene cannot be created after three automatic attempts over a few seconds, or the graphics
   context keeps being lost. The page then says why in a notice that stays, with a Reload button, and the
-  Signals panel says why too.
+  Signals panel says why too. The load timeout is 12 s per CDN host and covers the whole three.js module
+  graph, so on a link slower than that the page shows "Loading stadium…" for up to about 24 s and then
+  takes the hard failure; Reload is the retry.
 - A lost graphics context is recovered in place: the scene keeps its canvas, a running race pauses under a
   "Restoring graphics…" notice, and a restore resumes it. If no restore comes within 3 s, or the tab is
   visible with a lost context, the scene is made again on a fresh canvas. Three automatic attempts, then a
   hard failure; the count resets after 30 s of stable drawing.
+- A restored context is not trusted until its picture is checked. When the GPU process dies, the browser
+  empties the 2D canvases behind the stadium textures along with the WebGL context (measured with a real
+  crash in headless Chromium), so a plain restore draws a black track and black stands. The scene paints
+  the textures again on every restore and reads them back before it draws; if they are still blank it asks
+  for a new scene at once, and the canvas stays faded out until a frame has really been drawn.
 - `?tier=0..3` locks the 3D quality tier (3 is the lowest). The quality controller still steps the tier down
   on a slow device; its verdict that 3D is "too slow" is only noted in the view events and never leaves 3D.
 - The Signals panel (`D`) shows the 3D view line (quality tier, frame rate), and the last few view events
   (loading, loss, restore, re-creation, failure) with their times.
 
-Performance on real phones has not been measured yet.
+Performance on real phones has not been measured yet, and nothing here has run on a real phone, iOS Safari
+or a real GPU reset: context loss is tested in headless Chromium with `WEBGL_lose_context` and with a real GPU
+process crash injected over the DevTools protocol.
 
 ## How detection works
 

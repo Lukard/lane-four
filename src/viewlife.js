@@ -9,7 +9,8 @@
      classic        true for ?renderer=2d: nothing is loaded and the status is 'off'
      loadThree()    Promise of the three.js namespace; rejects with an Error whose message is the player-facing reason
      createScene(three, hooks)   the scene, or throws. hooks = { tier, onContextLost({ cause }), onContextRestored(),
-                                 onFallback({ reason }) }; tier is a number to start at (after a re-creation) or null
+                                 onRestoreFailed({ reason }), onFallback({ reason }) }; tier is a number to start at
+                                 (after a re-creation) or null
      disposeScene(scene)         default scene.dispose()
      hasWebGL2()    false: do not even try (default: the WebGL2RenderingContext global exists)
      isHidden()     true while the tab is hidden (default document.hidden)
@@ -39,9 +40,11 @@
 
    Context loss is recovered in place: the scene keeps its canvas and stops drawing, the app pauses a running
    race, and a restore resumes everything. If no restore arrives within 3 s, or the tab becomes visible with a
-   lost context, the scene is disposed and made again on a fresh canvas. That is an automatic attempt; three are
-   allowed, with a backoff, and the counter resets after 30 s of stable rendering. The fourth failure is a hard
-   one. The same attempts cover a scene that cannot be created (one null getContext is often transient). */
+   lost context, or the restore comes but the scene finds its textures blank (onRestoreFailed: a real GPU
+   process crash empties the 2D canvases behind them), the scene is disposed and made again on a fresh canvas.
+   That is an automatic attempt; three are allowed, with a backoff, and the counter resets after 30 s of stable
+   rendering. The fourth failure is a hard one. The same attempts cover a scene that cannot be created (one null
+   getContext is often transient). */
 (function (root) {
   'use strict';
   const LF = root.LaneFour || (root.LaneFour = {});
@@ -122,6 +125,7 @@
         tier: lastTier,
         onContextLost: (info) => contextLost(token, info),
         onContextRestored: () => contextRestored(token),
+        onRestoreFailed: (info) => restoreFailed(token, info),
         // The quality controller still gives up on speed in this build. Slow is never a reason to leave 3D.
         onFallback: (info) => { if (token === gen) log('speed-fallback-ignored', info && info.reason); },
       };
@@ -204,6 +208,17 @@
       log('context-restored', 'in place');
       stableSince = -1;
       set(view.shown ? 'ready' : 'loading', '');
+    }
+
+    // The context came back but the scene cannot show the stadium (its texture canvases are blank, as after a real
+    // GPU process crash). No point waiting: make a new scene now. This is an automatic attempt like any other.
+    function restoreFailed(token, info) {
+      if (token !== gen || !view.scene || view.status === 'failed') return;
+      const why = (info && info.reason) || 'the restored picture is blank';
+      log('restore-failed', why);
+      view.lost = true; // not drawable, whether or not the restore was reported first
+      restoreTimer = stop(restoreTimer);
+      recreate(why);
     }
 
     function onVisible() {

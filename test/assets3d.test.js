@@ -151,3 +151,48 @@ test('glyph atlas: every item gets a rect inside 1024 x 256, rows do not overlap
     assert.ok(rects.sq.w > 150, 'SQUAT keeps a wide cell');
   }
 });
+
+// The texture guard, on plain objects: a canvas that remembers whether it has been painted and can be emptied.
+const fakeTexture = () => {
+  const cv = { width: 512, height: 128, painted: true, readError: false, noContext: false, paints: 0 };
+  const g = {
+    getImageData: () => { if (cv.readError) throw new Error('cannot read'); return { data: [0, 0, 0, cv.painted ? 255 : 0] }; },
+  };
+  cv.getContext = () => (cv.noContext ? null : g);
+  const draw = () => { cv.painted = true; cv.paints++; };
+  return { image: cv, userData: { draw }, needsUpdate: false, cv };
+};
+
+test('texturesIntact reads two pixels per canvas: an emptied, unreadable or context-less canvas is not intact', () => {
+  const { texturesIntact, canvasIntact } = LF.Assets3D;
+  const list = [fakeTexture(), fakeTexture(), fakeTexture()];
+  assert.equal(texturesIntact(list), true);
+  assert.equal(texturesIntact([]), true, 'nothing to lose');
+  list[1].cv.painted = false;
+  assert.equal(texturesIntact(list), false, 'one emptied canvas is enough');
+  assert.equal(canvasIntact(list[0].cv), true);
+  assert.equal(canvasIntact(list[1].cv), false);
+  list[1].cv.painted = true;
+  list[2].cv.readError = true;
+  assert.equal(texturesIntact(list), false, 'a canvas that cannot be read cannot vouch for itself');
+  list[2].cv.readError = false;
+  list[0].cv.noContext = true;
+  assert.equal(texturesIntact(list), false);
+  list[0].cv.noContext = false;
+  assert.equal(texturesIntact(list), true);
+  // the probe points are inside the canvas, whatever its size
+  let seen = [];
+  const c = { width: 64, height: 256, getContext: () => ({ getImageData: (x, y) => { seen.push([x, y]); return { data: [0, 0, 0, 255] }; } }) };
+  assert.equal(canvasIntact(c), true);
+  assert.ok(seen.length === 2 && seen.every(([x, y]) => x >= 0 && x < 64 && y >= 0 && y < 256), JSON.stringify(seen));
+});
+
+test('repaintTextures paints every canvas with its own painter and marks each texture for upload', () => {
+  const { texturesIntact, repaintTextures } = LF.Assets3D;
+  const list = [fakeTexture(), fakeTexture()];
+  for (const t of list) t.cv.painted = false;
+  assert.equal(texturesIntact(list), false);
+  repaintTextures(list);
+  assert.deepEqual(list.map((t) => [t.cv.paints, t.needsUpdate]), [[1, true], [1, true]]);
+  assert.equal(texturesIntact(list), true);
+});

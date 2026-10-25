@@ -372,10 +372,59 @@
     }
   }
 
+  const SHAKE_T = 0.35;
+  const SHAKE_AMP = 0.10;
+  const SHAKE_HZ = 7;
+
+  // ----------------------------------------------------------- chase camera (no THREE; Scene3D re-exports it)
+  class ChaseCam {
+    constructor() {
+      this.rig = RIGS.standard;
+      this.sol = solveRig(this.rig, 0);
+      this.s = 0; // speed zoom-out, 0..1
+      this.yS = 0; // smoothed runner height
+      this.left = 0; // seconds of hit shake left
+      this.x = 0;
+      this.y = 3.4;
+      this.z = 0;
+      this.pitch = this.sol.pitch;
+    }
+    setRig(rig) {
+      this.rig = rig;
+      solveRig(rig, this.s, this.sol);
+      this.pitch = this.sol.pitch;
+    }
+    hit() { this.left = SHAKE_T; }
+    // snap: jump every smoothed value to where it is heading (new race, first frame, restart).
+    update(dt, r, av, phase, reduce, snap) {
+      const vEff = phase === 'paused' ? 0 : r.v;
+      const tgt = reduce ? 0 : clamp(vEff / 9.5, 0, 1);
+      this.s = snap || reduce ? tgt : approach(this.s, tgt, dt, 0.6);
+      this.yS = snap ? r.y : approach(this.yS, r.y, dt, reduce ? 0.25 : 0.12);
+      if (snap || reduce) this.left = 0;
+      const sol = solveRig(this.rig, this.s, this.sol);
+      let y = sol.height + 0.4 * this.yS - 0.25 * av.crouch;
+      let z = 0;
+      if (!reduce) {
+        y += 0.02 * av.gait * Math.cos(4 * Math.PI * av.phase);
+        if (this.left > 0) {
+          const el = SHAKE_T - this.left, k = 1 - el / SHAKE_T, amp = SHAKE_AMP * k * k, w = 2 * Math.PI * SHAKE_HZ * el;
+          y += amp * Math.sin(w);
+          z = amp * Math.cos(w);
+          this.left = Math.max(0, this.left - dt);
+        }
+      }
+      this.x = r.x - sol.back; // never lags: a hit drops v to 35% in one step
+      this.y = Math.max(3.15, y); // the finish board top is 3.0 m
+      this.z = z;
+      this.pitch = sol.pitch;
+    }
+  }
+
   Object.assign(LF, {
     Geom: {
       makePose, runnerPose, easeOutBack, tipAngle, laneZ, farScale, approach,
-      RIGS, rigFor, solveRig, projectPx, TIERS, pixelRatio, QualityController,
+      RIGS, rigFor, solveRig, projectPx, TIERS, pixelRatio, QualityController, ChaseCam,
     },
   });
 })(typeof window !== 'undefined' ? window : globalThis);

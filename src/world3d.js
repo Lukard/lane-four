@@ -34,6 +34,8 @@
    world.cheer(kind)  'clear' flashes the stands to 0.6, 'star' and 'finish' to 1.0 (never
                    lowers a stronger flash); other kinds are ignored. Decays with tau 0.5 s.
    world.rebake()  redraws the glyph atlas and LED board; runs by itself when the fonts load.
+   world.textures  the CanvasTextures; each has userData.draw, the painter of its canvas (the atlas and the LED
+                   face are painted by rebake()). For Assets3D.repaintTextures / texturesIntact, after a lost context.
    world.glowTexture  opaque greyscale radial gradient for additive blending, shared so the
                    runner's charge glow needs no texture of its own.
    world.stats()   { drawCalls, triangles, geometries, textures, textureMB, tier } of what is visible.
@@ -80,7 +82,7 @@
       draw(c.getContext('2d'));
       const t = new T.CanvasTexture(c);
       if (!linear) t.colorSpace = T.SRGBColorSpace;
-      texList.push(t);
+      t.userData.draw = draw; texList.push(t);
       return t;
     }
     const tTrack = makeTex(512, 128, A.painters.track);
@@ -490,7 +492,7 @@
       }
     }
 
-    return { root: rootG, sky: skyG, update, setRace, setTier, cheer, rebake, stats, dispose, glowTexture: tGlow };
+    return { root: rootG, sky: skyG, update, setRace, setTier, cheer, rebake, textures: texList, stats, dispose, glowTexture: tGlow };
   }
 
   Object.assign(LF, { World3D: { build } });

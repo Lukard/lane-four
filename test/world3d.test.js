@@ -286,3 +286,58 @@ test('after the finish the LED board rolls up into the rail and the gantry lifts
   race.x = 0;
   assert.deepEqual(at(-6), { sy: 1, ty: 0, led: true, gy: 0, gantry: true }, 'whole again');
 }));
+
+// A document whose canvases remember whether anything was painted on them, so a lost graphics process (which
+// empties every 2D canvas, measured with a real GPU crash) can be imitated without a browser.
+function trackingDocument() {
+  const canvases = [];
+  const doc = {
+    createElement: () => {
+      const cv = { width: 0, height: 0, painted: false, readError: false, noContext: false };
+      const base = ctx2d();
+      const g = new Proxy(base, {
+        get(t, k) {
+          if (k === 'fillRect' || k === 'fillText') return () => { cv.painted = true; };
+          if (k === 'getImageData') return () => { if (cv.readError) throw new Error('cannot read'); return { data: [0, 0, 0, cv.painted ? 255 : 0] }; };
+          return t[k];
+        },
+        set(t, k, v) { t[k] = v; return true; },
+      });
+      cv.getContext = () => (cv.noContext ? null : g);
+      canvases.push(cv);
+      return cv;
+    },
+  };
+  return { doc, canvases };
+}
+
+test('world.textures carry their painters: repainting after an emptied canvas (a GPU crash) restores every one, rebake() the atlas and LED', async (t) => {
+  const THREE = await threeP;
+  if (!THREE) return t.skip('three is not installed (npm install)');
+  const real = globalThis.document;
+  const { doc, canvases } = trackingDocument();
+  globalThis.document = doc;
+  try {
+    const world = LF.World3D.build(THREE, { race: new LF.Race(400), tier: 0, anisotropy: 4 });
+    assert.equal(canvases.length, 7, 'six painted textures and the glyph atlas');
+    const textures = new Set();
+    world.root.traverse((o) => { if (o.material) for (const k of ['map', 'alphaMap']) if (o.material[k]) textures.add(o.material[k]); });
+    assert.equal(textures.size, 7);
+    const { texturesIntact, repaintTextures } = LF.Assets3D;
+    assert.equal(world.textures.length, 7);
+    assert.deepEqual(new Set(world.textures), textures, 'the textures the materials use, no more and no fewer');
+    assert.ok(world.textures.every((x) => typeof x.userData.draw === 'function'), 'each carries its painter');
+    assert.ok(texturesIntact(world.textures), 'a fresh world: every canvas holds its picture');
+
+    for (const c of canvases) c.painted = false; // the GPU process died: every canvas is empty
+    assert.equal(texturesIntact(world.textures), false);
+    const before = world.textures.map((x) => x.version);
+    repaintTextures(world.textures);
+    world.rebake(); // what Scene3D does on a restore: the atlas, the LED face and the labels
+    assert.ok(canvases.every((c) => c.painted), 'every canvas painted again');
+    assert.equal(texturesIntact(world.textures), true);
+    assert.ok(world.textures.every((x, i) => x.version > before[i]), 'every texture marked for upload');
+  } finally {
+    globalThis.document = real;
+  }
+});

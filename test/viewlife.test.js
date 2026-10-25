@@ -249,6 +249,72 @@ test('a scene that finds its context lost when the tab becomes visible is re-cre
   assert.equal(w.live().length, 1);
 });
 
+test('a restore that cannot show the picture (blank textures after a GPU crash) re-creates the scene without waiting out the 3 s', async () => {
+  const w = world();
+  w.tierOf = 1;
+  const first = await w.up();
+  first.hooks.onContextLost({ cause: 'event' });
+  first.hooks.onRestoreFailed({ reason: 'the textures are blank after the restore' }); // said instead of onContextRestored
+  assert.equal(first.disposed, true, 'thrown away at once');
+  assert.equal(w.view.status, 'restoring');
+  assert.equal(w.view.lost, false);
+  assert.equal(w.view.attempts, 1, 'an automatic attempt like any other');
+  assert.equal(w.view.mode, '3d');
+  assert.deepEqual(w.view.events.slice(-4).map((e) => e.event), ['context-lost', 'restore-failed', 'recreate', 'retry']);
+  assert.equal(w.view.events[w.view.events.length - 3].reason, 'the textures are blank after the restore');
+  w.clock.tick(BACKOFF_MS[0]);
+  const second = w.last();
+  assert.notEqual(second, first);
+  assert.equal(second.hooks.tier, 1);
+  w.vm.revealed();
+  assert.equal(w.view.status, 'ready');
+  assert.equal(w.clock.pending(), 0, 'the 3 s restore timer of the first loss was cancelled');
+  assert.equal(w.live().length, 1);
+});
+
+test('a first frame that finds the restored textures blank re-creates the scene even though it was reported restored', async () => {
+  const w = world();
+  const first = await w.up();
+  first.hooks.onContextLost({ cause: 'event' });
+  first.hooks.onContextRestored();
+  assert.equal(w.view.status, 'ready');
+  assert.equal(w.view.lost, false);
+  first.hooks.onRestoreFailed({ reason: 'the textures are blank on the first frame after the restore' });
+  assert.equal(first.disposed, true);
+  assert.equal(w.view.status, 'restoring', 'the app pauses a running race and hides the canvas again');
+  assert.equal(w.view.scene, null);
+  w.clock.tick(BACKOFF_MS[0]);
+  w.vm.revealed();
+  assert.equal(w.view.status, 'ready');
+  assert.equal(w.view.attempts, 1);
+  assert.equal(w.live().length, 1);
+  assert.equal(w.view.mode, '3d');
+});
+
+test('a failed restore from a scene that is already gone is ignored, and a blank picture every time ends in the hard failure with the reason', async () => {
+  const w = world();
+  const first = await w.up();
+  first.hooks.onContextLost({ cause: 'event' });
+  first.hooks.onRestoreFailed({ reason: 'blank 1' });
+  w.clock.tick(BACKOFF_MS[0]);
+  first.hooks.onRestoreFailed({ reason: 'late' }); // the old scene again
+  assert.equal(w.view.scene, w.last());
+  assert.equal(w.view.attempts, 1);
+  assert.ok(!w.view.events.some((e) => e.reason === 'late'));
+  for (let i = 2; i <= BACKOFF_MS.length; i++) {
+    w.last().hooks.onRestoreFailed({ reason: 'blank ' + i });
+    w.clock.tick(BACKOFF_MS[i - 1]);
+    assert.equal(w.view.attempts, i);
+  }
+  assert.equal(w.view.status, 'restoring');
+  w.last().hooks.onRestoreFailed({ reason: 'blank 4' });
+  assert.equal(w.view.status, 'failed');
+  assert.equal(w.view.mode, '2d');
+  assert.equal(w.view.reason, 'the graphics context keeps failing');
+  assert.equal(w.live().length, 0);
+  assert.equal(w.clock.pending(), 0);
+});
+
 test('three automatic attempts, then a hard failure: the context keeps getting lost', async () => {
   const w = world();
   await w.up();
@@ -429,12 +495,13 @@ test('invariants hold over 400 random sequences of 40 events each', async () => 
     w.vm.start();
     await flush();
     for (let step = 0; step < 40; step++) {
-      const op = pick(['lost', 'lostv', 'restored', 'tick', 'tick', 'visible', 'hide', 'show', 'reveal', 'drawn', 'slow', 'rerr', 'fail', 'long']);
+      const op = pick(['lost', 'lostv', 'restored', 'blank', 'tick', 'tick', 'visible', 'hide', 'show', 'reveal', 'drawn', 'slow', 'rerr', 'fail', 'long']);
       const s = w.view.scene;
       const hooks = pick([s, s, s, w.scenes[0], w.last()]);
       if (op === 'lost' && hooks) hooks.hooks.onContextLost({ cause: 'event' });
       else if (op === 'lostv' && hooks) hooks.hooks.onContextLost({ cause: 'visibility' });
       else if (op === 'restored' && hooks) hooks.hooks.onContextRestored();
+      else if (op === 'blank' && hooks) hooks.hooks.onRestoreFailed({ reason: 'blank' });
       else if (op === 'tick') w.clock.tick(Math.floor(rnd() * 3500));
       else if (op === 'long') w.clock.tick(40000);
       else if (op === 'visible') w.vm.onVisible();
