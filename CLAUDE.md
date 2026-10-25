@@ -29,44 +29,63 @@ then every 35 m).
   a phone or iOS Safari, so frame cost next to MediaPipe, fill rate and every quality-tier number are
   untested starting values. Headless runs stub the fonts; the painted track glyphs (SQUAT, lane
   numbers) were not inspected in the real Big Shoulders Display or Doto.
+- View lifecycle fix, stage 1, on branch `fix/view-lifecycle` (local only: not pushed, not merged, so the
+  live page still has the old toggle and swaps). The owner saw 2D and 3D switching at random: phones
+  fetched three.js only at Start (race 1 in 2D, later races swapped to 3D), the quality controller and
+  the scene gave up to 2D on false positives, a lost graphics context was never restored, and the toggle
+  saved `2d` with no visible change. Now 3D is the only renderer and the view never swaps (see "3D view,
+  and why"). Verified in headless Chromium with SwiftShader: 123 unit tests; browser runs B, C (3D, late
+  three.js, 2D), D with D2, and E, 265 checks, all passing; a fuzz of 60 random 12-step sequences on
+  phone, iPad and desktop viewports (three.js on time, late or blocked; loss, restore, hidden tab,
+  resize, restart; keys mode) found no violated invariant, and the same fuzz flags a build without the
+  tab-visible handler in 8 of 60. Not verified: a real phone or iOS Safari, a real GPU reset (loss and
+  restore are simulated with `WEBGL_lose_context`, a null `getContext` with a patched call), camera mode
+  with a lost context. Stage 2 (the quality controller) is not done.
 - Next step: open the Pages URL on a phone and try it with a real body in a real room. Then run it on
   an iPhone and a mid-range Android for 3 minutes in camera mode: pose fps >= 24 and rAF p95 <= 36 ms
-  at the settled tier, or an automatic downgrade or 2D fallback with the race still completing (also
-  in Low Power Mode). If 3D hurts tracking on a phone, the chip, `V` or `?renderer=2d` switch it off.
+  at the settled tier, or an automatic quality downgrade with the race still completing (also in Low
+  Power Mode; on the view-lifecycle branch there is no 2D fallback for speed any more). If 3D hurts
+  tracking on a phone, `?renderer=2d` switches it off (the View chip, key `V` and the saved choice are
+  gone, see below).
 
 ## Commands
 
 - `npm run build`: writes `docs/index.html`. Never edit that file; edit `src/` and rebuild.
-- `npm install`: three (pinned 0.186.0) and MediaPipe. Needed for the 3D geometry tests and browser
-  runs B, C, E; without it those skip and `npm test` still passes.
+- `npm install`: three (pinned 0.186.0) and MediaPipe. Needed for the 3D geometry tests and the 3D
+  browser runs (B, C, D2, E); without it those skip and `npm test` still passes.
 - `npm test`: unit tests (Node only).
 - `npm run serve`: http://localhost:8000. The camera works on localhost or https only.
-- `npm run test:browser`: Playwright runs B, C, D, E; strict, any failed check exits 1. B and C run
-  twice: `?renderer=3d&tier=3` (SwiftShader) and `?renderer=2d`. It tests `docs/index.html`, so build
-  first (it fails if the file is stale). Run A needs local assets, see README.md.
-- URL params: `?renderer=2d|3d` overrides the saved choice for that load; `?tier=0..3` locks the 3D
-  quality tier. Keys: `V` toggles the view, `D` the signals panel.
+- `npm run test:browser`: Playwright runs B, C, D, E; strict, any failed check exits 1. B and C run as
+  3D (`?tier=3`, SwiftShader) and as `?renderer=2d`; C also with a held-back three.js (`late`); D has a
+  second part D2 (WebGL2 missing or never available); E is context loss. It tests `docs/index.html`, so
+  build first (it fails if the file is stale). Run A needs local assets, see README.md.
+- URL params: `?renderer=2d` shows the classic view (developer and test override, never saved);
+  `?tier=0..3` locks the 3D quality tier. Key `D` toggles the signals panel. There is no View chip, no
+  View choice on the intro card and no `V` key.
 
 ## Architecture
 
 - `build.js` inlines `src/style.css`, `core.js`, `geom.js`, `assets3d.js`, `world3d.js`, `actors3d.js`,
-  `scene3d.js` and `app.js` (that load order) into `src/page.html`. The result is one self-contained
-  page except for three.js. Inlined code must not contain `</script`. It also replaces
+  `scene3d.js`, `viewlife.js` and `app.js` (that load order) into `src/page.html`. The result is one
+  self-contained page except for three.js. Inlined code must not contain `</script`. It also replaces
   `__THREE_VERSION__` everywhere (import map, `THREE_URLS`) with `package.json` devDependencies.three,
   which must be an exact x.y.z. `require('./build.js').build()` returns the HTML without writing.
 - Network deps, all pinned: `@mediapipe/tasks-vision@1.0.1` UMD bundle and wasm from jsDelivr
   (global `Vision`), `pose_landmarker_lite` float16 model from storage.googleapis.com, Google Fonts
-  (Barlow, Big Shoulders Display, Doto), and `three@0.186.0` `three.module.min.js`, imported on
-  demand from jsDelivr, then cdnjs. An import map in page.html points the module's `./three.core.js`
-  at the minified core on each host. Failed imports are cached by the browser, so each URL is tried
-  once per page load; reloading is the only retry. The browser tests serve three from `node_modules`.
-- `src/core.js` and `src/geom.js` have no DOM access and attach to the global `LaneFour`, so Node
-  tests load them directly. `assets3d.js`, `world3d.js`, `actors3d.js` and `scene3d.js` take THREE as
+  (Barlow, Big Shoulders Display, Doto), and `three@0.186.0` `three.module.min.js`, imported when the
+  page loads (every device) from jsDelivr, then cdnjs. An import map in page.html points the module's
+  `./three.core.js` at the minified core on each host. Failed imports are cached by the browser, so
+  each URL is tried once per page load; reloading is the only retry. The browser tests serve three from
+  `node_modules`.
+- `src/core.js`, `src/geom.js` and `src/viewlife.js` have no DOM access and attach to the global
+  `LaneFour`, so Node tests load them directly (`viewlife.js` is driven there with a fake clock, fake
+  three.js and fake scenes). `assets3d.js`, `world3d.js`, `actors3d.js` and `scene3d.js` take THREE as
   an argument (classic IIFEs, no imports, no addons). `src/app.js` is the browser IIFE and exposes
   `window.laneFour = { state, settings, view }` for debugging and the browser tests;
-  `view.scene` has `stats()`, `project(x, y, z)`, `probe()`, `forceContextLoss()`, `setTier(n)`.
+  `view.scene` has `stats()`, `project(x, y, z)`, `probe()`, `forceContextLoss()`,
+  `forceContextRestore()`, `setTier(n)`.
 - Phases: intro, setup (calibration), ready (raise both hands, or Enter), countdown, running,
-  paused (body out of frame for 1.2 s, or tab hidden), finished, results.
+  paused (body out of frame for 1.2 s, tab hidden, or graphics being restored), finished, results.
 - Pose math runs in a virtual frame 480 units tall (`FRAME_H`), so thresholds don't depend on
   camera resolution. Landmarks pass through a One Euro filter (minCutoff 1.7, beta 0.03).
 
@@ -82,17 +101,37 @@ then every 35 m).
   board top, is at least 24 px at 14 m in all three rigs (browser runs measure it). The wide rig sits
   6.5 m back, not the spec's 6.0, or its hurdle top rose above the HUD line at 14 m.
 - Quality tiers T0 to T3 (`Geom.TIERS`: pixel-ratio and megapixel caps, particles, far plane, 30 fps
-  at T3). `Geom.QualityController` only steps down, then gives up to 2D. Start tier: coarse pointer
-  T1, else T0, stepped from a tier remembered in `lanefour.tier3d` for 14 days.
-- `view` in app.js: `mode` ('2d' | '3d', what is on screen) and `status` (idle, loading, ready,
-  failed). Fine-pointer desktops fetch three.js in idle time on load; everything else on the first
-  Start press; `?renderer=2d`, Save-Data and 2G skip it unless the player picks 3D. A swap into 3D
-  happens in intro, setup and ready (the toggle also in paused and finished), never in a race: if
-  three arrives after the countdown, that race finishes in 2D. The 3D canvas stays hidden until its
-  first frame; 250 ms later the 2D canvas is released (1x1, layers freed) and rebuilt on the way back.
-- Failures land in 2D with a toast, never a dead game: no WebGL2, import error or 12 s timeout, or
-  `create()` throwing (status failed); too slow (stays in 2D until the player picks 3D again);
-  context lost (one retry with the toggle). The saved choice is never changed by a failure.
+  at T3). `Geom.QualityController` only steps down; when it gives up (its 'slow' / 'emergency'
+  verdict) the scene tells the app, and the app only logs `speed-fallback-ignored` and stays in 3D:
+  slow is never a reason to leave 3D (reworking the controller itself, whose pose-rate rule has no 2D
+  baseline any more, is still to do). Start tier: coarse pointer T1, else T0, stepped from a tier
+  remembered in `lanefour.tier3d` for 14 days. A scene made again after a context loss starts at the
+  tier the old one had reached.
+- The product is 3D only, and the view never swaps. `LaneFour.ViewLife` (`src/viewlife.js`) is the state
+  machine, `app.js` its DOM and game side. `view.mode` is '3d' from the first moment ('2d' only after a
+  hard failure, or under `?renderer=2d`), `view.status` is `loading` (until the first scene has drawn),
+  `ready`, `restoring` (context lost), `failed` (hard failure) or `off` (`?renderer=2d`), `view.lost` says
+  the scene's context is down, and `view.events` is a ring of the last 20 (time, event, reason) whose last
+  five show in the Signals panel. three.js loads at page load on every device (no pointer, Save-Data or
+  connection test; the `lanefour.renderer` key is deleted at boot and never read or written). Until
+  the scene has drawn its first frame nothing is drawn in 2D (the classic canvas is `hidden` and its layout
+  is built only if the classic view is shown), the intro sits on the night background, and both Start
+  buttons are disabled saying "Loading stadium…" (or "Restoring graphics…"). The 3D canvas fades in once
+  its first frame has drawn.
+- Hard failures, and only these, show the classic view: no WebGL2 API (at once), three.js load error or
+  12 s timeout on both hosts, `create()` failing on every automatic attempt, or the context lost for the
+  fourth time in a stable spell. A hard failure shows `#notice` with the reason and a Reload button (it
+  stays), and the race goes on in 2D. One null `getContext` is transient: `create()` swaps in a fresh
+  canvas and the machine retries after 0.4 s, 1.2 s and 2.8 s before it counts.
+- A lost context is recovered in place: `webglcontextlost` is `preventDefault`ed, the scene keeps its
+  canvas and stops drawing (`render()` returns false), `app.js` pauses a running race (reason
+  `graphics`; also a race that is paused for another reason, and a countdown that ends while lost) and
+  shows "Restoring graphics…". `webglcontextrestored` resumes it (three.js has re-initialised itself).
+  No restore in 3 s, or the tab visible with a lost context (and, while hidden, only on return), disposes
+  the scene and makes a new one on a fresh canvas: an automatic attempt, three allowed, counters reset
+  after 30 s of steady drawing. More than five losses in a stable spell also go the re-creation way,
+  so a flapping context cannot loop forever. A scene whose `render()` throws three frames in a row counts
+  as lost.
 - Layout: `resize`, `orientationchange` and `visualViewport.resize` only mark it dirty; `frame()`
   applies it after two stable frames and 250 ms. Popups are six pooled DOM nodes in `#popLayer`.
 - `frame()` returns early while the tab is hidden: no pose detection, no drawing.
@@ -130,12 +169,18 @@ then every 35 m).
   constant.
 - `test/fake-vision.js` replaces the MediaPipe bundle in browser runs B and C. Its bot stands still,
   raises both hands, jogs at 170 spm and squats from 5.5 m to 2.9 m before each hurdle.
-- `test/browser_test.py`: D aborts every three.js URL (race finishes in 2D, toast, status failed); E
-  calls `forceContextLoss()` in ready (lands in 2D, race continues, then one retry). The 3D runs
-  assert probe pixels, draw calls and triangles, flat geometry and texture counts, camera x, the
-  next hurdle's size at 14 m and the wide rig after rotating. The 2D screenshots differ from the
-  pre-3D ones by the new `3D` chip in the HUD and the View buttons on the intro card (which now
-  needs a small scroll on a 390x844 phone), apart from the usual timing-dependent numbers.
+- `test/viewlife.test.js` drives the state machine with a fake clock and scenes, including 400 random
+  sequences with invariants (3D unless failed, one live scene, ready means drawing, a hard failure
+  leaves no timer behind).
+- `test/browser_test.py`: B and C are 3D at the intro with no 2D phase (C on a phone with a 2g Save-Data
+  connection and a stale saved `2d`), no View controls, no storage writes; C `late` holds three.js back
+  (Start disabled saying Loading stadium, race 1 and Race again in 3D); D aborts every three.js URL
+  (persistent notice with Reload, playable 2D race, Signals line says why), D2 has no WebGL2 or a
+  `getContext` that always returns null; E is context loss (in place in every phase, paused and resumed
+  in a race, re-created on a fresh canvas, hidden tab, after a speed fallback, one transient
+  `getContext` failure, repeated loss ending in the hard failure). The 3D runs assert probe pixels, draw
+  calls and triangles, flat geometry and texture counts, camera x, the next hurdle's size at 14 m and
+  the wide rig after rotating. E keeps to five losses per page in 30 s (more is re-created by design).
 
 ## Product direction (from the first conversation)
 
@@ -160,6 +205,7 @@ then every 35 m).
   tell that a phone is slow from the very first frame (a steady 25 fps from the start never steps a
   tier down). It does catch a device that slows later, a slow pose model in camera mode (poseFps
   below 22 and below 0.8x the 2D baseline), and the emergency floor of under 12 fps. Settle this with
-  real phone data before adding an absolute rule.
-- The View choice made the intro card taller: on a 390x844 phone the privacy note needs a small scroll.
+  real phone data before adding an absolute rule. On the view-lifecycle branch there is no 2D phase, so
+  no 2D baseline is ever learned: the pose rule is the absolute floor alone, and its verdicts only
+  lower the tier (a give-up is ignored by the app).
 - Only one exercise loop. No music; sound is WebAudio synth plus speechSynthesis.

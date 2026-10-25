@@ -50,24 +50,32 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--amber); out
   paint-order: stroke fill;
   will-change: transform;
 }
-#toast {
+/* A lost graphics context is put right in front of the player; a hard failure of the 3D view stays until the
+   page is reloaded. Over a race the failure sits under the HUD and "Restoring" in the middle; behind the intro
+   and results sheets both sit at the very top, and the sheets leave room for the failure. */
+#notice {
   position: fixed; left: 50%; transform: translateX(-50%);
   top: calc(env(safe-area-inset-top, 0px) + 150px);
   z-index: 40;
-  max-width: min(92vw, 420px);
-  padding: 10px 16px;
+  display: flex; align-items: center; gap: 12px;
+  width: max-content; max-width: min(92vw, 460px);
+  padding: 10px 14px;
   border-radius: 10px;
   background: rgba(7, 11, 23, .94);
   border: 1px solid var(--board-edge);
   box-shadow: 0 12px 30px rgba(0, 0, 0, .45);
-  font: 600 14px/1.35 var(--body);
-  text-align: center;
-  pointer-events: none;
+  font: 500 14px/1.35 var(--body);
 }
-/* Behind the intro and results sheets there is no HUD to stay clear of, and the top would cover the card's title. */
-body[data-phase="intro"] #toast, body[data-phase="finished"] #toast {
-  top: auto; bottom: calc(env(safe-area-inset-bottom, 0px) + 20px);
+#notice b { display: block; font: 800 16px/1.2 var(--display); letter-spacing: .06em; text-transform: uppercase; }
+#notice[data-kind="failed"] b { color: var(--bad); }
+#notice[data-kind="restoring"] b { color: var(--amber); }
+#notice span { display: block; color: var(--text); }
+#notice .chip { flex: none; }
+#notice[data-kind="restoring"] { top: 50%; transform: translate(-50%, -50%); text-align: center; pointer-events: none; }
+body[data-phase="intro"] #notice, body[data-phase="finished"] #notice {
+  top: calc(env(safe-area-inset-top, 0px) + 12px); transform: translateX(-50%);
 }
+body[data-notice="failed"] .sheet { padding-top: calc(env(safe-area-inset-top, 0px) + 124px); }
 
 /* ---------- HUD ---------- */
 #hud {
@@ -142,7 +150,6 @@ body[data-phase="intro"] #toast, body[data-phase="finished"] #toast {
 }
 .chip svg { width: 16px; height: 16px; display: block; }
 .chip[aria-pressed="false"] { color: var(--muted); }
-.chip:disabled, .pick button:disabled { opacity: .45; cursor: default; }
 
 @media (max-width: 600px) {
   #hud { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "dist clock" "prog prog"; }

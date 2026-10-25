@@ -144,7 +144,8 @@ test('tierKey and pickStartTier: coarse starts at T1, a fresh stored tier steps 
 const threeP = import('three').catch(() => null);
 const fakeCanvas = (getContext) => {
   const parent = { replaced: 0, replaceChild() { this.replaced++; } };
-  const cv = { clientWidth: 390, clientHeight: 844, ownerDocument: { documentElement: { clientWidth: 390, clientHeight: 844 } }, parentNode: parent, getContext, addEventListener() {}, removeEventListener() {} };
+  const fresh = () => ({ removeAttribute() {}, className: 'x', hidden: false });
+  const cv = { clientWidth: 390, clientHeight: 844, ownerDocument: { documentElement: { clientWidth: 390, clientHeight: 844 } }, parentNode: parent, getContext, cloneNode: fresh, addEventListener() {}, removeEventListener() {} };
   return { cv, parent };
 };
 
@@ -155,18 +156,16 @@ test('create validates its inputs and fails cleanly without a WebGL2 context', a
   assert.throws(() => LF.Scene3D.create(THREE, {}), /canvas/);
   assert.throws(() => LF.Scene3D.create(THREE, { canvas: {}, popLayer }), /race/);
   const seen = [];
-  for (const caveat of [undefined, true, false]) {
-    const { cv, parent } = fakeCanvas((type, attrs) => { seen.push([type, attrs]); return null; });
-    assert.throws(() => LF.Scene3D.create(THREE, { canvas: cv, popLayer, race, storage: null, failIfMajorPerformanceCaveat: caveat }), /WebGL2/);
-    assert.equal(parent.replaced, 0, 'a canvas that never got a context is left alone');
-  }
-  const base = { antialias: false, alpha: false, depth: true, stencil: false, premultipliedAlpha: true, preserveDrawingBuffer: false, powerPreference: 'default' };
-  assert.deepEqual(seen.map((s) => s[0]), ['webgl2', 'webgl2', 'webgl2']);
-  assert.deepEqual(seen[0][1], { ...base, failIfMajorPerformanceCaveat: true }, 'the caveat is on by default');
-  assert.deepEqual(seen[1][1], { ...base, failIfMajorPerformanceCaveat: true });
-  assert.deepEqual(seen[2][1], { ...base, failIfMajorPerformanceCaveat: false }, '?renderer=3d turns it off');
-  const { cv } = fakeCanvas(() => { throw new Error('denied'); });
-  assert.throws(() => LF.Scene3D.create(THREE, { canvas: cv, popLayer, race, storage: null }), /WebGL2/, 'a throwing getContext is a missing context');
+  const { cv, parent } = fakeCanvas((type, attrs) => { seen.push([type, attrs]); return null; });
+  assert.throws(() => LF.Scene3D.create(THREE, { canvas: cv, popLayer, race, storage: null }), /WebGL2/);
+  assert.equal(parent.replaced, 1, 'a canvas whose getContext failed is swapped for a fresh one, so a retry starts clean');
+  // One option set, no failIfMajorPerformanceCaveat: a software renderer is accepted, and slow is handled by quality tiers.
+  assert.deepEqual(seen.map((s) => s[0]), ['webgl2']);
+  assert.deepEqual(seen[0][1], { antialias: false, alpha: false, depth: true, stencil: false, premultipliedAlpha: true, preserveDrawingBuffer: false, powerPreference: 'default' });
+  assert.ok(!('failIfMajorPerformanceCaveat' in seen[0][1]));
+  const throwing = fakeCanvas(() => { throw new Error('denied'); });
+  assert.throws(() => LF.Scene3D.create(THREE, { canvas: throwing.cv, popLayer, race, storage: null }), /WebGL2/, 'a throwing getContext is a missing context');
+  assert.equal(throwing.parent.replaced, 1);
 });
 
 test('the module exports its public surface', () => {

@@ -67,24 +67,32 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--amber); out
   paint-order: stroke fill;
   will-change: transform;
 }
-#toast {
+/* A lost graphics context is put right in front of the player; a hard failure of the 3D view stays until the
+   page is reloaded. Over a race the failure sits under the HUD and "Restoring" in the middle; behind the intro
+   and results sheets both sit at the very top, and the sheets leave room for the failure. */
+#notice {
   position: fixed; left: 50%; transform: translateX(-50%);
   top: calc(env(safe-area-inset-top, 0px) + 150px);
   z-index: 40;
-  max-width: min(92vw, 420px);
-  padding: 10px 16px;
+  display: flex; align-items: center; gap: 12px;
+  width: max-content; max-width: min(92vw, 460px);
+  padding: 10px 14px;
   border-radius: 10px;
   background: rgba(7, 11, 23, .94);
   border: 1px solid var(--board-edge);
   box-shadow: 0 12px 30px rgba(0, 0, 0, .45);
-  font: 600 14px/1.35 var(--body);
-  text-align: center;
-  pointer-events: none;
+  font: 500 14px/1.35 var(--body);
 }
-/* Behind the intro and results sheets there is no HUD to stay clear of, and the top would cover the card's title. */
-body[data-phase="intro"] #toast, body[data-phase="finished"] #toast {
-  top: auto; bottom: calc(env(safe-area-inset-bottom, 0px) + 20px);
+#notice b { display: block; font: 800 16px/1.2 var(--display); letter-spacing: .06em; text-transform: uppercase; }
+#notice[data-kind="failed"] b { color: var(--bad); }
+#notice[data-kind="restoring"] b { color: var(--amber); }
+#notice span { display: block; color: var(--text); }
+#notice .chip { flex: none; }
+#notice[data-kind="restoring"] { top: 50%; transform: translate(-50%, -50%); text-align: center; pointer-events: none; }
+body[data-phase="intro"] #notice, body[data-phase="finished"] #notice {
+  top: calc(env(safe-area-inset-top, 0px) + 12px); transform: translateX(-50%);
 }
+body[data-notice="failed"] .sheet { padding-top: calc(env(safe-area-inset-top, 0px) + 124px); }
 
 /* ---------- HUD ---------- */
 #hud {
@@ -159,7 +167,6 @@ body[data-phase="intro"] #toast, body[data-phase="finished"] #toast {
 }
 .chip svg { width: 16px; height: 16px; display: block; }
 .chip[aria-pressed="false"] { color: var(--muted); }
-.chip:disabled, .pick button:disabled { opacity: .45; cursor: default; }
 
 @media (max-width: 600px) {
   #hud { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "dist clock" "prog prog"; }
@@ -387,7 +394,7 @@ kbd {
 </style>
 </head>
 <body>
-<canvas id="world" aria-hidden="true"></canvas>
+<canvas id="world" aria-hidden="true" hidden></canvas>
 <canvas id="world3d" aria-hidden="true" hidden></canvas>
 <div id="popLayer" aria-hidden="true"></div>
 
@@ -405,7 +412,6 @@ kbd {
   <div class="hud-clock">
     <div class="board"><span class="led" id="clock">0:00.0</span></div>
     <div class="hud-buttons">
-      <button class="chip" id="btnView" type="button" aria-pressed="true" hidden>3D</button>
       <button class="chip" id="btnSignals" type="button" aria-pressed="false" aria-controls="tune">Signals</button>
       <button class="chip" id="btnSound" type="button" aria-pressed="true" aria-label="Sound">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"/><path id="soundWave" d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg>
@@ -456,13 +462,9 @@ kbd {
         <button type="button" role="radio" data-dist="400" aria-checked="true">400 m hurdles<small>10 hurdles · about 2 minutes</small></button>
         <button type="button" role="radio" data-dist="200" aria-checked="false">200 m hurdles<small>5 hurdles · about 1 minute</small></button>
       </div>
-      <div class="pick" role="radiogroup" aria-label="View" hidden>
-        <button type="button" role="radio" data-view="3d" aria-checked="true">3D chase</button>
-        <button type="button" role="radio" data-view="2d" aria-checked="false">Classic side view</button>
-      </div>
       <div class="actions">
-        <button class="btn primary" id="btnCamera" type="button">Start with camera</button>
-        <button class="btn" id="btnManual" type="button">Play with keys or touch</button>
+        <button class="btn primary" id="btnCamera" type="button" disabled>Loading stadium…</button>
+        <button class="btn" id="btnManual" type="button" disabled>Loading stadium…</button>
       </div>
       <p class="error" id="introError" hidden></p>
       <p class="fine">Video is processed on this device and never uploaded. The tracking model downloads from Google's servers the first time.</p>
@@ -517,7 +519,10 @@ kbd {
   <button id="padStart" type="button" hidden>Start race<small>Enter</small></button>
 </div>
 
-<div id="toast" role="status" hidden></div>
+<div id="notice" role="status" hidden>
+  <div><b id="noticeTitle"></b> <span id="noticeBody"></span></div>
+  <button class="chip" id="btnReload" type="button" hidden>Reload</button>
+</div>
 
 <script>
 /* Lane Four core: pose signals, detectors and race simulation.
@@ -2493,24 +2498,27 @@ kbd {
      tier          0..3 to start there; omit to pick (coarse pointer: T1 else T0, stepped from the stored tier)
      lockTier      true: never change tier and never fall back for speed (?tier=N, tests)
      reduceMotion  initial only; render(ctx) re-reads ctx.reduceMotion every frame
-     failIfMajorPerformanceCaveat  default true; pass false under ?renderer=3d
-     onFallback    function({ reason, message, tier, emergency }) called once when 3D must give way to 2D:
-                   reason 'context-lost' (scene already disposing itself), 'slow' or 'emergency'
+     onContextLost      function({ cause }) the graphics context is lost ('event' for webglcontextlost, 'poll' when
+                        render() saw it first, 'visibility' when the tab became visible and found it lost). The scene
+                        stays alive on its canvas, draws nothing (render() returns false) and waits for a restore.
+     onContextRestored  function() the context is back and three.js has re-initialised itself: render() draws again
+     onFallback    function({ reason, message, tier, emergency }) called once when the quality controller gives up
+                   on speed: reason 'slow' or 'emergency'. The scene carries on drawing; what to do is the app's call.
      dpr, coarse, storage   overrides for devicePixelRatio, (pointer:coarse) and localStorage (tests)
 
-   scene.render(ctx)    once per rAF while 3D is the visible view; returns true when it drew a frame.
+   scene.render(ctx)    once per rAF; returns true when it drew a frame (false while the context is lost).
                         ctx = { race, av, phase, particles, popups, t, dt, reduceMotion, poseFps, mode, sheet }
                         (av = S.av, particles = S.particles, popups = S.popups, t seconds, dt clamped seconds,
                         poseFps = S.poseFps, mode 'camera' | 'manual', sheet true while the intro or the results
                         sheet covers the picture: 15 fps). Allocation free except popup style strings.
-   scene.idle(ctx)      once per rAF while the scene exists but 2D is visible (feeds the 2D pose-rate baseline)
    scene.onEvent(e)     every race event: 'hit' shakes the camera, 'clear' 'star' 'finish' cheer the stands
    scene.layout()       re-read the canvas size and DPR; true if anything changed
    scene.setTier(n)     force a tier (debug); scene.discardTiming() after anything that disturbs frame times
    scene.stats()        { line, tier, tierName, rig, fps, p95ms, megapixels, calls, triangles, ... } (allocates; <= 4 Hz)
    scene.project(x,y,z) pixel position of a point (race x, height, three Z = minus race z) as { x, y, depth }
    scene.probe()        render, then read a 7x7 grid of pixels in the same task
-   scene.forceContextLoss(), scene.dispose() (idempotent), scene.parts (debug handles)
+   scene.forceContextLoss(), scene.forceContextRestore() (debug: WEBGL_lose_context), scene.dispose() (idempotent,
+                        swaps the canvas for a fresh one), scene.parts (debug handles)
    Properties: canvas, tier, rig, lost, disposed, drawn (frames drawn). */
 (function (root) {
   'use strict';
@@ -2621,7 +2629,8 @@ kbd {
     let tier = TIERS[tierIdx];
 
     // A canvas that has had a WebGL context can never get another one, so retiring it leaves a pristine
-    // clone (same id and attributes, hidden) in its place for the next create().
+    // clone (same id and attributes, hidden) in its place for the next create(). A canvas whose
+    // getContext() failed is swapped too, so a retry never depends on how the browser treats it.
     function retireCanvas() {
       if (!canvas.parentNode) return;
       const fresh = canvas.cloneNode(false);
@@ -2640,10 +2649,13 @@ kbd {
     try {
       gl = canvas.getContext('webgl2', {
         antialias: false, alpha: false, depth: true, stencil: false, premultipliedAlpha: true, preserveDrawingBuffer: false,
-        powerPreference: 'default', failIfMajorPerformanceCaveat: o.failIfMajorPerformanceCaveat !== false,
+        powerPreference: 'default',
       });
     } catch (e) { gl = null; }
-    if (!gl) throw new Error('WebGL2 is not available (the context could not be created).');
+    if (!gl) {
+      retireCanvas();
+      throw new Error('WebGL2 is not available (the context could not be created).');
+    }
     let renderer;
     try {
       renderer = new T.WebGLRenderer({ canvas, context: gl, antialias: false, alpha: false, stencil: false, preserveDrawingBuffer: false, powerPreference: 'default' });
@@ -2678,6 +2690,7 @@ kbd {
       dead = true;
       if (onVis && doc) doc.removeEventListener('visibilitychange', onVis);
       canvas.removeEventListener('webglcontextlost', onLost);
+      canvas.removeEventListener('webglcontextrestored', onRestored);
       try { if (actors) actors.dispose(); } catch (e) { /* keep going */ }
       try { if (world) world.dispose(); } catch (e) { /* keep going */ }
       scene.clear();
@@ -2685,20 +2698,49 @@ kbd {
       try { if (!gl.isContextLost()) renderer.forceContextLoss(); } catch (e) { /* keep going */ }
       retireCanvas();
     }
+    // The quality controller giving up on speed. Said once; the scene itself carries on drawing.
     function fail(reason, message, emergency) {
       if (failed) return;
       failed = { reason, message };
       if (typeof o.onFallback === 'function') {
         try { o.onFallback({ reason, message, tier: tierIdx, emergency: !!emergency }); } catch (e) { /* the app's problem */ }
       }
-      if (reason === 'context-lost') disposeAll();
+    }
+    // A lost context is not a failure of the scene: it keeps its canvas and everything three.js holds, stops
+    // drawing, and picks up again when the browser restores the context. Whatever else is to be done about it
+    // (wait, re-create) is the app's call. Reported once per loss, however it was noticed.
+    function markLost(cause) {
+      if (dead || lost) return;
+      lost = true;
+      if (typeof o.onContextLost === 'function') {
+        try { o.onContextLost({ cause }); } catch (e) { /* the app's problem */ }
+      }
     }
     function onLost(ev) {
-      ev.preventDefault();
-      lost = true;
-      fail('context-lost', 'The graphics context was lost.', true);
+      ev.preventDefault(); // without this the browser never restores the context
+      markLost('event');
+    }
+    // Registered after three.js's own listener, so by now it has re-initialised its state: buffers and
+    // textures are rebuilt from what the objects still hold on the next render.
+    function onRestored() {
+      if (dead || !lost) return;
+      lost = false;
+      try {
+        renderer.setClearColor(CLEAR); // three.js starts its background state again at black
+        actors.prewarm(true); // and programs compile lazily: do it now, not in the middle of the next frame
+        renderer.compile(scene, camera);
+        actors.prewarm(false);
+      } catch (e) { /* the next frame says so */ }
+      ctl.clear();
+      nextDraw = 0;
+      accDt = 0;
+      lastCall = -1;
+      if (typeof o.onContextRestored === 'function') {
+        try { o.onContextRestored(); } catch (e) { /* the app's problem */ }
+      }
     }
     canvas.addEventListener('webglcontextlost', onLost);
+    canvas.addEventListener('webglcontextrestored', onRestored);
 
     try {
       if (!gl || gl.isContextLost()) throw new Error('WebGL context unavailable');
@@ -2780,14 +2822,14 @@ kbd {
 
     // ---- the frame
     function render(ctx) {
-      if (dead) return false;
+      if (dead || lost) return false;
+      if (gl.isContextLost()) { markLost('poll'); return false; }
       const t = ctx.t, tMs = t * 1000;
       nowMs = tMs;
-      if (!visible) { // 3D just became the visible view
+      if (!visible) { // the first frame
         visible = true;
         ctl.setView3d(tMs, true);
         ctl.discard(2);
-        if (failed && failed.reason !== 'context-lost') { failed = null; ctl.reset(); ctl.setView3d(tMs, true); }
         nextDraw = 0;
         accDt = 0;
         lastCall = -1;
@@ -2834,14 +2876,6 @@ kbd {
       }
       if (verdict === 'to2d') fail(ctl.emergency ? 'emergency' : 'slow', ctl.emergency ? 'The 3D view could not keep up.' : 'The 3D view is too slow on this device.', ctl.emergency);
       return did;
-    }
-
-    // The scene exists but 2D is what the player sees: keep the 2D pose rate as the baseline.
-    function idle(ctx) {
-      if (dead) return;
-      const tMs = ctx.t * 1000;
-      if (visible) { visible = false; ctl.setView3d(tMs, false); }
-      if (ctx.mode === 'camera' && ctx.poseFps > 0) ctl.pose(tMs, ctx.poseFps);
     }
 
     function onEvent(e) {
@@ -2912,7 +2946,7 @@ kbd {
       nextDraw = 0;
       accDt = 0;
       lastCall = -1;
-      if (gl.isContextLost()) onLost({ preventDefault() {} });
+      if (gl.isContextLost()) markLost('visibility');
     };
     doc.addEventListener('visibilitychange', onVis);
 
@@ -2932,9 +2966,10 @@ kbd {
     }
 
     return {
-      canvas, render, idle, onEvent, layout, setTier, project, probe, stats,
+      canvas, render, onEvent, layout, setTier, project, probe, stats,
       discardTiming() { ctl.discard(2); },
       forceContextLoss() { if (!dead) renderer.forceContextLoss(); },
+      forceContextRestore() { if (!dead) renderer.forceContextRestore(); },
       dispose: disposeAll,
       get tier() { return tierIdx; },
       get rig() { return cam.rig.name; },
@@ -2946,6 +2981,290 @@ kbd {
   }
 
   Object.assign(root.LaneFour, { Scene3D: { create, ChaseCam, pickStartTier, tierKey } });
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
+/* Lane Four view lifecycle: the state machine behind "3D is the renderer". No DOM and no three.js: every
+   effect comes in through deps, so the tests drive it with fakes. Attaches LaneFour.ViewLife.
+
+   The page is committed to 3D from the first moment. There is no 2D phase, no toggle and no automatic
+   swap. The classic view is only ever shown for a HARD failure (three.js cannot load, WebGL2 cannot start,
+   the graphics context keeps failing) or when the developer asked for it with ?renderer=2d.
+
+   const vm = LaneFour.ViewLife.create(deps)
+     classic        true for ?renderer=2d: nothing is loaded and the status is 'off'
+     loadThree()    Promise of the three.js namespace; rejects with an Error whose message is the player-facing reason
+     createScene(three, hooks)   the scene, or throws. hooks = { tier, onContextLost({ cause }), onContextRestored(),
+                                 onFallback({ reason }) }; tier is a number to start at (after a re-creation) or null
+     disposeScene(scene)         default scene.dispose()
+     hasWebGL2()    false: do not even try (default: the WebGL2RenderingContext global exists)
+     isHidden()     true while the tab is hidden (default document.hidden)
+     onChange(view) after every change of mode, status, reason or shown
+     now, setTimeout, clearTimeout   clock and timers (tests)
+     version        the three.js version, only for display
+
+   vm.view  (the app reads it, the machine writes it)
+     mode      '3d' until a hard failure, then '2d'; '2d' from the start under ?renderer=2d
+     status    'off'        ?renderer=2d, the developer override
+               'loading'    from the start until the first scene has drawn its first frame
+               'ready'      3D is drawing
+               'restoring'  the graphics context is lost: waiting for the browser to restore it, or re-creating the scene
+               'failed'     hard failure: the classic view is showing, with view.reason as the why
+     reason    why, for 'failed' and 'restoring'
+     lost      the current scene's graphics context is lost right now: do not draw it
+     scene, three, shown (the 3D canvas has drawn and is visible), attempts, losses, events
+
+   vm.start()             begins loading three.js (call once, at page load)
+   vm.revealed()          the app drew the scene's first frame and made the 3D canvas visible
+   vm.drawn()             once per drawn frame: after about 30 s of it the attempt and loss counters reset
+   vm.renderFailed(err)   renderer.render threw; three in a row re-create the scene
+   vm.onVisible()         the tab became visible again
+   vm.fail(reason, err)   hard failure (idempotent)
+   vm.line(sceneLine)     the "View:" line of the Signals panel; sceneLine is the scene's own line while 'ready'
+   vm.recent(n)           the last n events as text, oldest first
+
+   Context loss is recovered in place: the scene keeps its canvas and stops drawing, the app pauses a running
+   race, and a restore resumes everything. If no restore arrives within 3 s, or the tab becomes visible with a
+   lost context, the scene is disposed and made again on a fresh canvas. That is an automatic attempt; three are
+   allowed, with a backoff, and the counter resets after 30 s of stable rendering. The fourth failure is a hard
+   one. The same attempts cover a scene that cannot be created (one null getContext is often transient). */
+(function (root) {
+  'use strict';
+  const LF = root.LaneFour || (root.LaneFour = {});
+
+  const RESTORE_WAIT_MS = 3000; // a lost context gets this long to come back by itself
+  const STABLE_MS = 30000; // this much steady drawing resets the counters
+  const BACKOFF_MS = [400, 1200, 2800]; // before automatic attempt 1, 2 and 3
+  const MAX_LOSSES = 5; // losses per stable spell, restored or not, before in-place recovery is given up for a re-creation
+  const MAX_RENDER_ERRORS = 3; // render() throwing this many frames in a row counts as a lost scene
+  const KEEP = 20; // events kept
+
+  const describe = (err) => (err && err.message) || String(err || 'unknown error');
+
+  function create(deps) {
+    const d = deps || {};
+    const now = d.now || (() => (root.performance ? root.performance.now() : Date.now()));
+    const setT = d.setTimeout || ((fn, ms) => root.setTimeout(fn, ms));
+    const clearT = d.clearTimeout || ((h) => root.clearTimeout(h));
+    const isHidden = d.isHidden || (() => !!(root.document && root.document.hidden));
+    const hasWebGL2 = d.hasWebGL2 || (() => typeof root.WebGL2RenderingContext !== 'undefined');
+    const dispose = d.disposeScene || ((s) => s.dispose());
+    const t0 = now();
+
+    const view = {
+      mode: d.classic ? '2d' : '3d',
+      status: d.classic ? 'off' : 'loading',
+      reason: '',
+      scene: null, three: null, version: d.version || '',
+      shown: false, lost: false, attempts: 0, losses: 0, events: [],
+    };
+
+    let gen = 0; // generation of the current scene: a hook of an older one is stale and ignored
+    let restoreTimer = 0;
+    let buildTimer = 0;
+    let stableSince = -1;
+    let renderErrors = 0;
+    let lastTier = null;
+
+    function log(event, reason) {
+      view.events.push({ t: Math.round(now() - t0), event, reason: reason || '' });
+      if (view.events.length > KEEP) view.events.shift();
+    }
+    function emit() {
+      if (typeof d.onChange !== 'function') return;
+      try { d.onChange(view); } catch (e) { if (root.console) root.console.warn('view change handler failed', e); }
+    }
+    function set(status, reason) {
+      view.status = status;
+      view.reason = reason || '';
+      emit();
+    }
+    function stop(timer) { if (timer) clearT(timer); return 0; }
+
+    // ---------------------------------------------------------------- loading
+    function start() {
+      if (view.mode === '2d') {
+        log('classic', '?renderer=2d');
+        emit();
+        return;
+      }
+      log('three-loading');
+      if (!hasWebGL2()) {
+        fail('WebGL2 is not available in this browser');
+        return;
+      }
+      Promise.resolve().then(() => d.loadThree()).then(onLoaded, (err) => fail(describe(err), err));
+    }
+
+    function onLoaded(three) {
+      if (view.status === 'failed') return;
+      view.three = three;
+      log('three-loaded');
+      build('start');
+    }
+
+    function hooks(token) {
+      return {
+        tier: lastTier,
+        onContextLost: (info) => contextLost(token, info),
+        onContextRestored: () => contextRestored(token),
+        // The quality controller still gives up on speed in this build. Slow is never a reason to leave 3D.
+        onFallback: (info) => { if (token === gen) log('speed-fallback-ignored', info && info.reason); },
+      };
+    }
+
+    // Makes a scene now. A failure is an attempt used up; the fourth one is a hard failure.
+    function build(cause) {
+      buildTimer = 0;
+      if (view.status === 'failed') return;
+      const token = ++gen;
+      let scene;
+      try {
+        scene = d.createScene(view.three, hooks(token));
+      } catch (err) {
+        log('scene-failed', describe(err));
+        retry('scene could not start', describe(err));
+        return;
+      }
+      view.scene = scene;
+      log('scene-created', cause);
+      emit();
+    }
+
+    function retry(cause, message) {
+      if (view.status === 'failed') return;
+      if (view.attempts >= BACKOFF_MS.length) {
+        fail(message || 'the graphics context keeps failing');
+        return;
+      }
+      const wait = BACKOFF_MS[view.attempts++];
+      log('retry', cause + ' · attempt ' + view.attempts + ' of ' + BACKOFF_MS.length + ' in ' + wait + ' ms');
+      buildTimer = stop(buildTimer);
+      buildTimer = setT(() => build(cause), wait);
+    }
+
+    // Dispose the scene and make a new one on a fresh canvas (the scene swaps its canvas out when disposed).
+    function recreate(cause) {
+      if (view.status === 'failed' || buildTimer) return;
+      restoreTimer = stop(restoreTimer);
+      const old = view.scene;
+      view.scene = null;
+      view.shown = false;
+      view.lost = false;
+      gen++;
+      if (old) {
+        try { lastTier = old.tier; } catch (e) { /* keep the previous one */ }
+        try { dispose(old); } catch (e) { /* already gone */ }
+      }
+      log('recreate', cause);
+      set('restoring', cause);
+      retry(cause, null);
+    }
+
+    // ---------------------------------------------------------- context events
+    function contextLost(token, info) {
+      if (token !== gen || !view.scene || view.lost || view.status === 'failed') return;
+      const found = info && info.cause === 'visibility';
+      view.lost = true;
+      view.losses++;
+      stableSince = -1;
+      log('context-lost', found ? 'found lost when the tab became visible' : 'webglcontextlost');
+      set('restoring', 'context lost');
+      restoreTimer = stop(restoreTimer);
+      if (found) recreate('lost while the tab was hidden');
+      else if (view.losses > MAX_LOSSES) recreate('lost ' + view.losses + ' times');
+      else restoreTimer = setT(onRestoreTimeout, RESTORE_WAIT_MS);
+    }
+
+    function onRestoreTimeout() {
+      restoreTimer = 0;
+      if (!view.lost || !view.scene) return;
+      if (isHidden()) { log('restore-wait', 'tab hidden: re-creating when it is visible'); return; }
+      recreate('no restore within ' + RESTORE_WAIT_MS / 1000 + ' s');
+    }
+
+    function contextRestored(token) {
+      if (token !== gen || !view.scene || !view.lost) return;
+      restoreTimer = stop(restoreTimer);
+      view.lost = false;
+      log('context-restored', 'in place');
+      stableSince = -1;
+      set(view.shown ? 'ready' : 'loading', '');
+    }
+
+    function onVisible() {
+      if (view.lost && view.scene) recreate('tab visible with a lost context');
+    }
+
+    // ------------------------------------------------------------- the frame
+    function revealed() {
+      if (!view.scene || view.shown || view.lost) return;
+      view.shown = true;
+      renderErrors = 0;
+      stableSince = now();
+      log('revealed');
+      if (view.status !== 'ready') set('ready', '');
+      else emit();
+    }
+
+    function drawn() {
+      renderErrors = 0;
+      if (view.status !== 'ready') { stableSince = -1; return; }
+      const t = now();
+      if (stableSince < 0) { stableSince = t; return; }
+      if ((view.attempts || view.losses) && t - stableSince >= STABLE_MS) {
+        view.attempts = 0;
+        view.losses = 0;
+        log('stable', 'counters reset');
+      }
+    }
+
+    function renderFailed(err) {
+      if (!view.scene || view.lost || view.status === 'failed') return;
+      log('render-error', describe(err));
+      if (++renderErrors >= MAX_RENDER_ERRORS) {
+        renderErrors = 0;
+        recreate('render error: ' + describe(err));
+      }
+    }
+
+    // ------------------------------------------------------------ hard failure
+    function fail(reason, err) {
+      if (view.status === 'failed') return;
+      restoreTimer = stop(restoreTimer);
+      buildTimer = stop(buildTimer);
+      gen++;
+      const old = view.scene;
+      view.scene = null;
+      view.shown = false;
+      view.lost = false;
+      view.mode = '2d';
+      log('hard-failure', reason);
+      if (root.console) root.console.warn('3D view unavailable: ' + reason, err || '');
+      if (old) { try { dispose(old); } catch (e) { /* already gone */ } }
+      set('failed', reason);
+    }
+
+    // -------------------------------------------------------------- reporting
+    function line(sceneLine) {
+      switch (view.status) {
+        case 'off': return 'View: classic 2D (?renderer=2d, the developer override)';
+        case 'failed': return 'View: classic 2D (3D unavailable: ' + view.reason + ')';
+        case 'loading': return view.scene ? 'View: 3D chase (starting)' : 'View: loading the 3D stadium';
+        case 'restoring': return 'View: 3D chase (restoring graphics: ' + view.reason + ', ' + view.attempts + ' of ' + BACKOFF_MS.length + ' automatic attempts used)';
+        default: return sceneLine || 'View: 3D chase';
+      }
+    }
+
+    function recent(n) {
+      return view.events.slice(-n).map((e) => '+' + (e.t / 1000).toFixed(1) + ' s ' + e.event + (e.reason ? ' · ' + e.reason : ''));
+    }
+
+    return { view, start, revealed, drawn, renderFailed, onVisible, fail, line, recent };
+  }
+
+  Object.assign(LF, { ViewLife: { create, RESTORE_WAIT_MS, STABLE_MS, BACKOFF_MS, MAX_LOSSES, MAX_RENDER_ERRORS, KEEP } });
 })(typeof window !== 'undefined' ? window : globalThis);
 
 </script>
@@ -2980,19 +3299,20 @@ kbd {
       try { const v = localStorage.getItem('lanefour.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; }
     },
     set(k, v) { try { localStorage.setItem('lanefour.' + k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } },
+    del(k) { try { localStorage.removeItem('lanefour.' + k); } catch (e) { /* storage unavailable */ } },
   };
-  // ?renderer=2d|3d overrides the saved choice for this page load only; ?tier=0..3 locks the 3D quality tier.
+  // ?renderer=2d is the developer and test override for the classic side view (never saved);
+  // ?tier=0..3 locks the 3D quality tier. There is no player-facing choice of view.
   const query = new URLSearchParams(window.location.search);
-  const rendererParam = ['2d', '3d'].includes(query.get('renderer')) ? query.get('renderer') : null;
+  const classic = query.get('renderer') === '2d';
   const tierParam = /^[0-3]$/.test(query.get('tier') || '') ? Number(query.get('tier')) : null;
-  const rendererSaved = store.get('renderer', 'auto');
+  // Earlier builds saved a View choice. It is not read any more, and a stored '2d' must not hold anyone back.
+  store.del('renderer');
   const settings = {
     stepT: store.get('stepT', DEFAULTS.stepT),
     squatDown: store.get('squatDown', DEFAULTS.squatDown),
     distance: store.get('distance', 400),
     sound: store.get('sound', true),
-    // auto = 3D when the device can do it (the default), 3d = the same, 2d = the classic side view only
-    renderer: rendererParam || (['auto', '3d', '2d'].includes(rendererSaved) ? rendererSaved : 'auto'),
   };
 
   // --------------------------------------------------------------------- DOM
@@ -3003,7 +3323,7 @@ kbd {
     'intro', 'introError', 'btnCamera', 'btnManual',
     'results', 'resEvent', 'resTime', 'resBest', 'resHurdles', 'resStars', 'resSquats', 'resSteps', 'resCad', 'resTop', 'resHint', 'btnAgain', 'btnSetup',
     'tune', 'tuneClose', 'sigStep', 'sigSquat', 'sigStepVal', 'sigSquatVal', 'stepT', 'stepTOut', 'squatT', 'squatTOut', 'readout', 'btnRecal', 'btnResetT',
-    'pads', 'padL', 'padR', 'padSquat', 'padStart', 'popLayer', 'btnView', 'toast'].forEach((id) => { el[id] = $(id); });
+    'pads', 'padL', 'padR', 'padSquat', 'padStart', 'popLayer', 'notice', 'noticeTitle', 'noticeBody', 'btnReload'].forEach((id) => { el[id] = $(id); });
   // The 3D canvas is swapped for a fresh one when a scene is disposed, so never keep a reference to it.
   Object.defineProperty(el, 'world3d', { get: () => $('world3d') });
 
@@ -3204,7 +3524,6 @@ kbd {
   function setPhase(p) {
     S.phase = p;
     document.body.dataset.phase = p;
-    updateViewControls();
   }
   function clearTimers() {
     S.timers.forEach(clearTimeout);
@@ -3226,12 +3545,10 @@ kbd {
     el.pip.hidden = true;
     el.padStart.hidden = true;
     clearBanner();
-    el.btnCamera.disabled = false;
-    el.btnManual.disabled = false;
+    syncStart();
     el.introError.hidden = !errorMsg;
     el.introError.textContent = errorMsg || '';
     newRace();
-    maybeSwapView();
   }
 
   function showPlayUi() {
@@ -3267,7 +3584,6 @@ kbd {
     showPlayUi();
     keepAwake();
     bannerKey = null;
-    maybeSwapView();
   }
 
   function enterReady() {
@@ -3281,7 +3597,6 @@ kbd {
       banner('Ready', 'Press Enter or tap Start race.', { tone: 'amber', pop: true });
       el.padStart.hidden = false;
     }
-    maybeSwapView();
   }
 
   function startCountdown() {
@@ -3308,6 +3623,7 @@ kbd {
     cadence.reset();
     S.pendingSteps = 0;
     S.pendingSquat = null;
+    if (gfxHeld) { pauseRace('graphics'); return; } // the starter's gun waits for the graphics
     banner('Go', '', { tone: 'amber', pop: true });
     Sound.gun();
     S.timers.push(setTimeout(() => { if (S.phase === 'running') clearBanner(); }, 800));
@@ -3318,10 +3634,11 @@ kbd {
     setPhase('paused');
     S.pausedReason = reason;
     if (reason === 'hidden') banner('Paused', 'Come back to this tab to continue.', { tone: 'bad' });
+    syncNotice(); // "Restoring graphics" says the race is paused
   }
 
   function resumeRace() {
-    if (S.phase !== 'paused') return;
+    if (S.phase !== 'paused' || gfxHeld) return;
     setPhase('running');
     banner('Go', '', { tone: 'amber', pop: true });
     S.timers.push(setTimeout(() => { if (S.phase === 'running') clearBanner(); }, 700));
@@ -3381,7 +3698,6 @@ kbd {
     el.results.hidden = true;
     el.pads.hidden = S.mode !== 'manual';
     setPhase('ready');
-    maybeSwapView();
     startCountdown();
   }
 
@@ -3472,17 +3788,18 @@ kbd {
     return 'The camera could not start (' + ((err && err.message) || 'unknown error') + ').';
   }
 
+  // The progress text on the camera button while the camera starts; '' otherwise.
+  let camBusy = '';
   async function startCamera() {
+    if (!startable()) return;
     Sound.unlock();
-    ensureThree(false);
     el.introError.hidden = true;
-    el.btnCamera.disabled = true;
-    el.btnManual.disabled = true;
+    camBusy = 'Starting camera…';
+    syncStart();
     try {
       if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw Object.assign(new Error('insecure context'), { code: 'insecure' });
       }
-      el.btnCamera.textContent = 'Starting camera…';
       if (!stream) {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
@@ -3494,7 +3811,8 @@ kbd {
       await waitForVideo(el.cam);
       updateAspect();
       if (!landmarker) {
-        el.btnCamera.textContent = 'Loading body tracking…';
+        camBusy = 'Loading body tracking…';
+        syncStart();
         landmarker = await createLandmarker();
       }
       S.mode = 'camera';
@@ -3505,7 +3823,8 @@ kbd {
       if (!landmarker) stopCamera();
       showIntro(cameraErrorMessage(err));
     } finally {
-      el.btnCamera.textContent = 'Start with camera';
+      camBusy = '';
+      syncStart();
     }
   }
 
@@ -3641,7 +3960,7 @@ kbd {
       }
     } else if (S.phase === 'running') {
       if (f !== 'ok' && held > 1.2) pauseRace(f);
-    } else if (S.phase === 'paused' && S.pausedReason !== 'hidden') {
+    } else if (S.phase === 'paused' && S.pausedReason !== 'hidden' && S.pausedReason !== 'graphics') {
       if (f !== 'ok') {
         const m = FRAMING[f];
         banner(m[0], m[1] + ' The race is paused.', { tone: 'bad' });
@@ -3654,8 +3973,8 @@ kbd {
 
   // ------------------------------------------------------- keys/touch input
   function startManual() {
+    if (!startable()) return;
     Sound.unlock();
-    ensureThree(false);
     stopCamera();
     S.mode = 'manual';
     clearTimers();
@@ -3687,7 +4006,6 @@ kbd {
     if (e.target && e.target.tagName === 'INPUT') return;
     const k = e.key;
     if ((k === 'd' || k === 'D') && !e.metaKey && !e.ctrlKey) { toggleTune(); return; }
-    if ((k === 'v' || k === 'V') && !e.metaKey && !e.ctrlKey && !e.altKey) { if (!e.repeat) toggleView(); return; }
     if (S.phase === 'intro') return;
     if (k === 'Enter') {
       e.preventDefault();
@@ -3769,7 +4087,7 @@ kbd {
   }
 
   function handleRaceEvent(e) {
-    if (view.mode === '3d' && view.scene) view.scene.onEvent(e); // camera shake and crowd cheer
+    if (view.scene) view.scene.onEvent(e); // camera shake and crowd cheer
     switch (e.type) {
       case 'jump': Sound.jump(e.power); break;
       case 'clear':
@@ -3882,7 +4200,7 @@ kbd {
     sizeSigCanvases();
   }
 
-  // The classic view's canvas and its prebuilt layers: only while 2D is what the player sees.
+  // The classic view's canvas and its prebuilt layers: only built when the classic view is what shows.
   function layout2d() {
     cv.width = Math.round(V.W * V.dpr);
     cv.height = Math.round(V.H * V.dpr);
@@ -4000,7 +4318,7 @@ kbd {
   }
 
   function render2d(t) {
-    if (!V.sky) return; // released while the 3D view is showing
+    if (!V.sky) return; // the classic layout is built when it first shows
     const r = S.race;
     V.camX = r.x;
     const W = V.W;
@@ -4475,24 +4793,13 @@ kbd {
         lines.push('Keys/touch mode: signals are simulated.');
       }
       lines.push('In use: step ' + S.eff.step.toFixed(3) + ' · squat ' + S.eff.squat.toFixed(2) + ' · cadence ' + Math.round(S.cadence) + ' spm');
-      lines.push(viewLine());
+      // The scene's stats (a sorted copy of its 300-sample frame ring) are only computed here, four times a
+      // second, while the panel is open.
+      lines.push(vm.line(view.scene && view.status === 'ready' && !view.lost ? view.scene.stats().line : ''));
+      for (const e of vm.recent(5)) lines.push('  ' + e);
       el.readout.textContent = lines.join('\n');
       el.readout.style.whiteSpace = 'pre-line';
     }
-  }
-
-  // The View line of the Signals panel. The scene's stats (a sorted copy of its 300-sample frame ring)
-  // are only computed here, four times a second, while the panel is open.
-  function viewLine() {
-    if (view.mode === '3d' && view.scene) return view.scene.stats().line;
-    let why = 'chosen';
-    if (settings.renderer !== '2d') {
-      if (view.status === 'failed' || view.slow) why = '3D unavailable: ' + view.reason;
-      else if (view.status === 'loading') why = 'loading 3D';
-      else if (view.status === 'idle') why = view.reason ? '3D not loaded: ' + view.reason : '3D loads when you start';
-      else why = 'switching to 3D';
-    }
-    return 'View: classic 2D (' + why + ')';
   }
 
   function toggleTune(force) {
@@ -4513,41 +4820,13 @@ kbd {
   }
 
   // ------------------------------------------------------------------ 3D view
-  // The classic canvas view is always available. The 3D chase view is an optional upgrade: three.js
-  // loads on demand from a CDN, and any failure (no WebGL2, offline, a slow device, a lost context)
-  // lands back in 2D without losing the race.
-  //   view.mode    what the player sees: '2d' | '3d'
-  //   view.status  'idle' (not loaded) | 'loading' | 'ready' (three loaded; the scene is made on first use) | 'failed'
-  const view = {
-    mode: '2d', status: 'idle', reason: '', scene: null, three: null, version: THREE_VERSION,
-    shown: false, // the 3D canvas has drawn its first frame and is visible
-    slow: false, // fell back for speed: stay in 2D until the player asks for 3D again
-    retried: false, // the one re-create after a lost context has been used
-    forced3d: rendererParam === '3d', // ?renderer=3d also accepts a software renderer
-    wantNow: false, // the player asked for 3D while it was still loading
-    releaseTimer: 0, toastTimer: 0,
-  };
-  const viewPick = Array.from(document.querySelectorAll('.pick button[data-view]'));
-
-  function toast(message, ms) {
-    el.toast.textContent = message;
-    el.toast.hidden = false;
-    clearTimeout(view.toastTimer);
-    view.toastTimer = setTimeout(() => { el.toast.hidden = true; }, ms || 4000);
-  }
-
-  function probeWebGL2() {
-    let gl = null;
-    try {
-      gl = document.createElement('canvas').getContext('webgl2', { failIfMajorPerformanceCaveat: !view.forced3d });
-    } catch (e) { gl = null; }
-    if (!gl) throw Object.assign(new Error('WebGL2 is not available'), { code: 'no-webgl2' });
-    try {
-      const lose = gl.getExtension('WEBGL_lose_context');
-      if (lose) lose.loseContext(); // do not keep a context just for the probe
-    } catch (e) { /* released with the canvas */ }
-  }
-
+  // 3D is the renderer. three.js starts loading with the page, on every device, and while it loads nothing is
+  // drawn in 2D: the intro card sits on the plain night colour and the Start buttons wait. The classic canvas
+  // view exists for a hard failure and for ?renderer=2d, nothing else; it is never swapped in or out for speed,
+  // connection or a lost context. What loads when, and what a loss or a failure does, is LaneFour.ViewLife
+  // (src/viewlife.js). This is its DOM and game side.
+  //   view.mode    '3d' (the page is committed to it from the start) or '2d' (hard failure, ?renderer=2d)
+  //   view.status  'off' | 'loading' | 'ready' | 'restoring' | 'failed', see viewlife.js
   function withTimeout(promise, ms, what) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(Object.assign(new Error(what + ' timed out'), { code: 'timeout' })), ms);
@@ -4555,190 +4834,131 @@ kbd {
     });
   }
 
-  // Memoised. A failed import is cached by the browser for the life of the page, so no URL is tried
+  // Called once. A failed import is cached by the browser for the life of the page, so no URL is tried
   // twice; reloading the page is the only retry.
-  let threeLoad = null;
-  function loadThree() {
-    if (threeLoad) return threeLoad;
-    threeLoad = (async () => {
-      probeWebGL2();
-      let last = null;
-      for (const url of THREE_URLS) {
-        try {
-          const m = await withTimeout(import(url), THREE_TIMEOUT_MS, 'Loading three.js');
-          if (String(m.REVISION) !== THREE_REVISION || typeof m.WebGLRenderer !== 'function') {
-            throw Object.assign(new Error('Unexpected three.js build (revision ' + m.REVISION + ')'), { code: 'revision' });
-          }
-          return m;
-        } catch (err) {
-          last = err;
-          console.warn('Could not load three.js from ' + url, err);
+  async function loadThree() {
+    let last = null;
+    for (const url of THREE_URLS) {
+      try {
+        const m = await withTimeout(import(url), THREE_TIMEOUT_MS, 'Loading three.js');
+        if (String(m.REVISION) !== THREE_REVISION || typeof m.WebGLRenderer !== 'function') {
+          throw Object.assign(new Error('Unexpected three.js build (revision ' + m.REVISION + ')'), { code: 'revision' });
         }
+        return m;
+      } catch (err) {
+        last = err;
+        console.warn('Could not load three.js from ' + url, err);
       }
-      // Short and readable: it ends up in a tooltip and in the Signals panel. The details were logged above.
-      throw last && ['timeout', 'revision'].includes(last.code) ? last : Object.assign(new Error('Could not load three.js'), { code: 'load', cause: last });
-    })();
-    return threeLoad;
-  }
-
-  // Reasons not to spend the bytes on 3D unasked (the player can still choose it with the toggle).
-  function threeSkipReason() {
-    const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-    if (c && c.saveData) return 'data saver is on';
-    if (c && /^(slow-2g|2g)$/.test(c.effectiveType || '')) return 'slow connection';
-    return '';
-  }
-
-  // Starts loading three.js once per page. `asked` is true when the player chose 3D with the toggle.
-  function ensureThree(asked) {
-    if (view.status !== 'idle') return;
-    if (settings.renderer === '2d' && !asked) return;
-    const skip = asked ? '' : threeSkipReason();
-    view.reason = skip;
-    if (skip) {
-      updateViewControls();
-      return;
     }
-    view.status = 'loading';
-    loadThree().then(onThreeReady, (err) => onThreeFailed(describe(err), err));
-    updateViewControls();
+    // Short and readable: it ends up in the notice and in the Signals panel. The details were logged above.
+    throw last && ['timeout', 'revision'].includes(last.code) ? last : Object.assign(new Error('Could not load three.js'), { code: 'load', cause: last });
   }
 
-  function describe(err) {
-    return (err && err.message) || 'could not start';
+  // The 3D canvas is swapped for a fresh one whenever a scene is disposed, so el.world3d is looked up each time.
+  function createScene(THREE, hooks) {
+    return LF.Scene3D.create(THREE, {
+      canvas: el.world3d,
+      popLayer: el.popLayer,
+      race: S.race,
+      tier: tierParam != null ? tierParam : hooks.tier != null ? hooks.tier : undefined, // after a re-creation, keep the lowered tier
+      lockTier: tierParam != null,
+      reduceMotion,
+      onContextLost: hooks.onContextLost,
+      onContextRestored: hooks.onContextRestored,
+      onFallback: hooks.onFallback,
+    });
   }
 
-  function onThreeReady(THREE) {
-    view.three = THREE;
-    if (view.status === 'loading') view.status = 'ready';
-    const asked = view.wantNow;
-    view.wantNow = false;
-    maybeSwapView(asked);
-    updateViewControls();
+  const vm = LF.ViewLife.create({ classic, version: THREE_VERSION, loadThree, createScene, onChange: () => syncView() });
+  const view = vm.view;
+
+  // Everything the page shows follows from view.status: the classic canvas, the notice, the Start buttons, and
+  // whether a running race is held.
+  function syncView() {
+    if (view.mode === '2d') show2d();
+    else if (view.shown) el.world3d.classList.toggle('on', !view.lost); // a lost canvas is blank or glitched: show the night instead
+    syncNotice();
+    syncStart();
+    syncGraphicsHold();
   }
 
-  function onThreeFailed(reason, err) {
-    if (view.status === 'failed') return;
-    view.status = 'failed';
-    view.reason = reason;
-    view.wantNow = false;
-    console.warn('3D view unavailable: ' + reason, err || '');
-    if (view.scene) {
-      const dead = view.scene;
-      view.scene = null;
-      try { dead.dispose(); } catch (e) { /* already gone */ }
-    }
-    setViewMode('2d');
-    toast('3D view unavailable. Using the classic view.');
-    updateViewControls();
+  // The classic view, built the first time it shows.
+  function show2d() {
+    if (!cv.hidden) return;
+    const c = el.world3d;
+    c.classList.remove('on');
+    c.hidden = true;
+    el.popLayer.hidden = true;
+    layoutShared();
+    layout2d();
+    cv.hidden = false;
   }
 
-  // The scene calls this when it cannot go on: 'context-lost' (it is disposing itself), or
-  // 'slow' / 'emergency' (it stays alive and idle, so the toggle can try again).
-  function onSceneFallback(info) {
-    if (info.reason === 'context-lost') {
-      view.scene = null;
-      view.status = 'failed';
-      view.reason = 'context-lost';
-      console.warn('3D view lost its graphics context');
-      setViewMode('2d');
-      toast('3D view unavailable. Using the classic view.');
-    } else {
-      view.slow = true;
-      view.reason = info.reason === 'emergency' ? 'too slow (stalled)' : 'too slow';
-      console.warn('3D view too slow on this device (' + info.reason + '), using the classic view');
-      setViewMode('2d');
-      toast('3D view is too slow on this device. Using the classic view.');
-    }
-    updateViewControls();
-  }
-
-  function ensureScene() {
-    if (view.scene) return true;
-    if (!view.three) return false;
-    try {
-      view.scene = LF.Scene3D.create(view.three, {
-        canvas: el.world3d,
-        popLayer: el.popLayer,
-        race: S.race,
-        tier: tierParam == null ? undefined : tierParam,
-        lockTier: tierParam != null,
-        reduceMotion,
-        failIfMajorPerformanceCaveat: !view.forced3d,
-        onFallback: onSceneFallback,
-      });
-      return true;
-    } catch (err) {
-      onThreeFailed(describe(err), err);
-      return false;
-    }
-  }
-
-  // Swaps into 3D when it is ready and wanted. On its own only in intro, setup and ready, never in the
-  // middle of a race: three.js arriving later than the countdown means that race is finished in 2D.
-  // `asked` (the toggle) also allows paused and finished.
-  const AUTO_SWAP = { intro: true, setup: true, ready: true };
-  const ASKED_SWAP = { intro: true, setup: true, ready: true, paused: true, finished: true };
-  function maybeSwapView(asked) {
-    if (view.mode === '3d' || !view.three || view.status === 'failed') return;
-    if (settings.renderer === '2d' || (view.slow && !asked)) return;
-    if (!(asked ? ASKED_SWAP : AUTO_SWAP)[S.phase]) return;
-    if (!ensureScene()) return;
-    setViewMode('3d');
-  }
-
-  function setViewMode(mode) {
-    if (mode === view.mode) return;
-    view.mode = mode;
-    if (mode === '3d') {
-      view.shown = false; // the canvas stays hidden until its first frame has drawn
-      view.slow = false;
-      view.reason = '';
-      view.scene.layout();
-    } else {
-      show2d();
-    }
-    updateViewControls();
-  }
-
-  // 3D has drawn its first frame: fade it in, then let go of the 2D layer once the fade is over.
+  // 3D has drawn its first frame: fade it in over the plain background.
   function reveal3d() {
     const c = el.world3d;
-    view.shown = true;
     c.hidden = false;
     el.popLayer.hidden = false;
     view.scene.layout();
     void c.offsetWidth; // so the opacity change below animates
     c.classList.add('on');
-    clearTimeout(view.releaseTimer);
-    view.releaseTimer = setTimeout(release2d, 250);
+    vm.revealed();
   }
 
-  function release2d() {
-    if (view.mode !== '3d' || !view.shown || V.released) return;
-    V.released = true;
-    cv.hidden = true;
-    cv.width = 1;
-    cv.height = 1;
-    V.sky = null;
-    V.stands = null;
-    V.grain = null;
+  // Start is only offered when there is something to start on: the stadium (or the classic view, when that is
+  // what this page is using).
+  const viewReady = () => view.status === 'ready' || view.status === 'off' || view.status === 'failed';
+  const startable = () => viewReady() && !camBusy;
+  function syncStart() {
+    const wait = viewReady() ? '' : view.status === 'restoring' ? 'Restoring graphics…' : 'Loading stadium…';
+    el.btnCamera.disabled = !!(wait || camBusy);
+    el.btnManual.disabled = !!(wait || camBusy);
+    el.btnCamera.textContent = camBusy || wait || 'Start with camera';
+    el.btnManual.textContent = wait || 'Play with keys or touch';
   }
 
-  function show2d() {
-    clearTimeout(view.releaseTimer);
-    view.shown = false;
-    const c = el.world3d;
-    c.classList.remove('on');
-    c.hidden = true;
-    el.popLayer.hidden = true; // the scene only updates its popup nodes while it draws
-    cv.hidden = false;
-    if (V.released || V.stale) { // rebuild what was let go or went out of date under the 3D view
-      V.released = false;
-      V.stale = false;
-      layoutShared();
-      layout2d();
+  // A hard failure stays on screen with a way to retry; a lost context shows while it is being put right.
+  let noticeKey = '';
+  function syncNotice() {
+    let kind = '';
+    let title = '';
+    let body = '';
+    if (view.status === 'failed') {
+      kind = 'failed';
+      title = '3D view unavailable';
+      body = view.reason.replace(/\.$/, '') + '. This page is using the classic side view.';
+    } else if (view.status === 'restoring') {
+      kind = 'restoring';
+      title = 'Restoring graphics…';
+      body = S.phase === 'paused' ? 'The race is paused.' : '';
     }
+    const key = kind + '|' + title + '|' + body;
+    if (key === noticeKey) return;
+    noticeKey = key;
+    document.body.dataset.notice = kind; // the sheets leave room for a failure notice
+    el.notice.dataset.kind = kind;
+    el.notice.hidden = !kind;
+    el.noticeTitle.textContent = title;
+    el.noticeBody.textContent = body;
+    el.btnReload.hidden = kind !== 'failed';
+  }
+
+  // While the graphics are being restored a running race is paused, and it picks up again by itself.
+  let gfxHeld = false;
+  function syncGraphicsHold() {
+    const hold = view.status === 'restoring';
+    if (hold === gfxHeld) return;
+    gfxHeld = hold;
+    if (hold) {
+      if (S.phase === 'running') { pauseRace('graphics'); clearBanner(); } else if (S.phase === 'paused') S.pausedReason = 'graphics';
+    } else if (S.phase === 'paused' && S.pausedReason === 'graphics') {
+      if (document.hidden) {
+        S.pausedReason = 'hidden';
+        banner('Paused', 'Come back to this tab to continue.', { tone: 'bad' });
+      } else if (S.mode === 'manual' || S.framing === 'ok') resumeRace();
+      else S.pausedReason = 'framing'; // updatePrompts resumes it once the player is in frame
+    }
+    syncNotice();
   }
 
   // One object, reused every frame, so the render path allocates nothing of its own.
@@ -4747,8 +4967,9 @@ kbd {
     t: 0, dt: 0, reduceMotion, poseFps: 0, mode: null, sheet: false,
   };
   function renderWorld(t, dt) {
+    if (view.mode === '2d') { render2d(t); return; }
     const sc = view.scene;
-    if (!sc) { render2d(t); return; }
+    if (!sc || view.lost) return; // loading, or the context is down: nothing is drawn
     rctx.race = S.race;
     rctx.phase = S.phase;
     rctx.particles = S.particles;
@@ -4758,69 +4979,18 @@ kbd {
     rctx.poseFps = S.poseFps;
     rctx.mode = S.mode;
     rctx.sheet = S.phase === 'intro' || !el.results.hidden; // behind a sheet the scene draws at 15 fps
-    if (view.mode !== '3d') { // the scene is kept for the toggle; 2D is what the player sees
-      sc.idle(rctx);
-      render2d(t);
+    let drew = false;
+    try {
+      drew = sc.render(rctx);
+    } catch (err) {
+      console.warn('3D frame failed', err);
+      vm.renderFailed(err);
       return;
     }
-    if (sc.render(rctx) && !view.shown && view.mode === '3d') reveal3d();
-    // Until 3D has drawn, and if it just gave way to 2D, keep the classic picture going.
-    if (!view.shown || view.mode !== '3d') render2d(t);
+    if (!drew) return;
+    if (!view.shown) reveal3d();
+    vm.drawn();
   }
-
-  // ------------------------------------------------- view toggle (chip, radios, V)
-  const viewLocked = () => S.phase === 'countdown' || S.phase === 'running';
-  const canRetry3d = () => view.status === 'failed' && view.reason === 'context-lost' && !view.retried && !!view.three;
-  // What the View controls show as selected: 3D is on, or is what the player will get once it loads.
-  const wants3d = () => view.mode === '3d'
-    || (settings.renderer !== '2d' && view.status !== 'failed' && !view.slow && !(view.status === 'idle' && view.reason));
-
-  function updateViewControls() {
-    const on = wants3d();
-    const dead = view.status === 'failed' && !canRetry3d();
-    const locked = viewLocked();
-    el.btnView.setAttribute('aria-pressed', String(on));
-    el.btnView.disabled = locked || dead;
-    el.btnView.title = dead ? '3D view unavailable: ' + view.reason
-      : canRetry3d() ? 'Try the 3D view again (V)'
-        : on ? 'Switch to the classic side view (V)' : 'Switch to the 3D chase view (V)';
-    for (const b of viewPick) {
-      const is3d = b.dataset.view === '3d';
-      b.setAttribute('aria-checked', String(is3d === on));
-      b.disabled = locked || (dead && is3d);
-      b.title = dead && is3d ? '3D view unavailable: ' + view.reason : '';
-    }
-  }
-
-  function chooseView(want3d) {
-    if (viewLocked()) return;
-    if (want3d) {
-      if (view.status === 'failed') { // one retry after a lost context, with the module already loaded
-        if (!canRetry3d()) return;
-        view.retried = true;
-        view.status = 'ready';
-        view.reason = '';
-      }
-      settings.renderer = 'auto';
-      store.set('renderer', 'auto');
-      view.slow = false;
-      if (view.status === 'idle') {
-        view.wantNow = true;
-        ensureThree(true);
-      } else if (view.status === 'loading') {
-        view.wantNow = true;
-      } else {
-        maybeSwapView(true);
-      }
-    } else {
-      settings.renderer = '2d';
-      store.set('renderer', '2d');
-      view.wantNow = false;
-      setViewMode('2d');
-    }
-    updateViewControls();
-  }
-  function toggleView() { chooseView(!wants3d()); }
 
   // ------------------------------------------------------------ layout, debounced
   // resize, orientationchange and visualViewport.resize only mark the layout dirty; frame() applies it
@@ -4840,8 +5010,7 @@ kbd {
     applied.h = h;
     applied.dpr = dpr;
     layoutShared();
-    if (view.mode === '2d') layout2d();
-    else V.stale = true; // the classic layout is rebuilt if the player switches back
+    if (!cv.hidden) layout2d();
     if (view.scene && view.mode === '3d') view.scene.layout();
   }
   function pollLayout(now) {
@@ -4911,14 +5080,7 @@ kbd {
   el.btnRecal.addEventListener('click', () => {
     if (S.mode === 'camera' && S.phase !== 'intro') enterSetup();
   });
-  el.btnView.addEventListener('click', () => {
-    toggleView();
-    el.btnView.blur(); // Enter and Space belong to the race
-  });
-  viewPick.forEach((b) => b.addEventListener('click', () => {
-    chooseView(b.dataset.view === '3d');
-    b.blur();
-  }));
+  el.btnReload.addEventListener('click', () => window.location.reload());
   document.querySelectorAll('.pick button[data-dist]').forEach((b) => {
     b.addEventListener('click', () => {
       settings.distance = Number(b.dataset.dist);
@@ -4938,6 +5100,7 @@ kbd {
       S.poseFrames = 0;
       S.poseFpsT = lastFrame;
       if (view.scene) view.scene.discardTiming();
+      vm.onVisible();
       if (S.mode) keepAwake();
       if (S.phase === 'paused' && S.pausedReason === 'hidden') {
         if (S.mode === 'manual' || S.framing === 'ok') resumeRace();
@@ -4970,28 +5133,15 @@ kbd {
 
   applyLayout(true);
   lastLayoutAt = performance.now();
-  el.btnView.hidden = false;
-  viewPick.forEach((b) => { b.parentElement.hidden = false; });
   syncControls();
   applyThresholds();
   showIntro();
-  updateViewControls();
   requestAnimationFrame(frame);
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { hudCache.dist = null; });
 
-  // On a desktop with a fine pointer (and no data saver) fetch three.js in idle time, so 3D is ready by
-  // the time Start is pressed. Everywhere else it loads on the first Start press.
-  function preloadThree() {
-    if (settings.renderer === '2d' || !(window.matchMedia && window.matchMedia('(pointer: fine)').matches)) return;
-    const go = () => ensureThree(false);
-    if ('requestIdleCallback' in window) window.requestIdleCallback(go, { timeout: 3000 });
-    else setTimeout(go, 1500);
-  }
-  if (document.readyState === 'complete') preloadThree();
-  else window.addEventListener('load', preloadThree, { once: true });
-
   // Handle for debugging in the console and for the browser tests.
   window.laneFour = { state: S, settings, view };
+  vm.start(); // three.js starts loading now, on every device
 })();
 
 </script>

@@ -8,14 +8,15 @@ MediaPipe Pose Landmarker (lite) runs in the browser, and video never leaves the
 - `src/core.js`: pose signals, step/squat/hands-up detectors, race simulation (no DOM)
 - `src/geom.js`: runner pose, chase-camera rigs and projection, quality tiers and controller (no DOM)
 - `src/assets3d.js`, `src/world3d.js`: the 3D stadium: procedural textures, track, stands, hurdles, finish
-- `src/actors3d.js`, `src/scene3d.js`: the 3D runner, particles and popups; the WebGL renderer, chase camera, quality tiers, context loss
-- `src/app.js`: camera, MediaPipe, game loop, the classic 2D canvas view, the three.js loader and view switching, UI
+- `src/actors3d.js`, `src/scene3d.js`: the 3D runner, particles and popups; the WebGL renderer, chase camera, quality tiers, context loss events
+- `src/viewlife.js`: the view lifecycle as a state machine (loading, ready, restoring a lost context, hard failure; no DOM)
+- `src/app.js`: camera, MediaPipe, game loop, the classic 2D canvas view (hard failure and `?renderer=2d` only), the three.js loader, the page's side of the view lifecycle, UI
 - `src/style.css`, `src/page.html`: styles and page template
 - `build.js`: inlines everything into `docs/index.html` (the page GitHub Pages serves); three.js itself loads separately from a CDN
 - `test/core.test.js`: detector and race tests on synthetic pose sequences (`test/synth.js`)
-- `test/geom.test.js`, `test/assets3d.test.js`, `test/world3d.test.js`, `test/actors3d.test.js`, `test/scene3d.test.js`, `test/build.test.js`: unit tests for the 3D modules and the build (no GPU)
+- `test/geom.test.js`, `test/assets3d.test.js`, `test/world3d.test.js`, `test/actors3d.test.js`, `test/scene3d.test.js`, `test/viewlife.test.js`, `test/build.test.js`: unit tests for the 3D modules, the view lifecycle and the build (no GPU)
 - `test/fake-vision.js`: stand-in for MediaPipe that plays the game with a scripted body
-- `test/browser_test.py`: headless Chromium runs of the whole page, as 3D and as 2D
+- `test/browser_test.py`: headless Chromium runs of the whole page: 3D, a late three.js, hard failures, context loss, and `?renderer=2d`
 
 ## Commands
 
@@ -25,11 +26,11 @@ MediaPipe Pose Landmarker (lite) runs in the browser, and video never leaves the
     npm run test:browser   # browser runs B, C, D and E, needs Playwright and npm install
 
 Browser tests need Playwright once: `pip install playwright && python3 -m playwright install chromium`.
-Runs B, C and E also need `npm install` (three.js is pinned in `package.json`; the tests serve it from
-`node_modules/three` in place of the CDN). Without it the 3D runs print SKIP and run D still checks the
-fallback. The runs are strict: any failed check makes the command exit 1. They test `docs/index.html`, so
+The 3D runs (B, C, D2, E) also need `npm install` (three.js is pinned in `package.json`; the tests serve it
+from `node_modules/three` in place of the CDN). Without it they print SKIP and run D still checks the hard
+failure. The runs are strict: any failed check makes the command exit 1. They test `docs/index.html`, so
 run `npm run build` first (the test says so if it is stale). Screenshots go to `test/shots/`, suffixed
-`_3d` or `_2d`.
+`_3d`, `_2d` or `_late` where a run has flavours.
 
 Run A loads the real tracking model against a still photo used as the camera. It needs local copies of
 what the page normally fetches:
@@ -50,20 +51,27 @@ Use a full-body photo for `person.jpg` so tracking sees feet as well as the uppe
 The camera needs a secure page: `localhost` or `https://`. Claude's in-app artifact preview blocks
 the camera. GitHub Pages works for phones: serve from the `main` branch, `/docs` folder.
 
-## Views: 3D chase and classic side view
+## The view: 3D, and when it is not
 
-The default is a 3D chase camera behind the runner (three.js, loaded from a CDN on demand). The classic
-side view is the fallback and a choice:
+The game is 3D: a chase camera behind the runner (three.js, loaded from a CDN). There is no player-facing
+choice of view, and nothing swaps between 3D and 2D for speed, connection, data saving or a lost context.
 
-- Switch with the `3D` chip in the HUD, the View buttons on the intro card, or the `V` key. It is
-  disabled during the countdown and the race, and the choice is saved.
-- `?renderer=2d` or `?renderer=3d` overrides the saved choice for one page load. `?renderer=3d` also
-  accepts a software renderer. `?tier=0..3` locks the 3D quality tier (3 is the lowest).
-- 3D needs WebGL2. If it cannot load or start (offline, no WebGL2, the graphics context is lost) or the
-  device cannot keep up, the game says so and carries on in the classic view. Desktops with a mouse
-  fetch three.js in idle time when the page loads; phones fetch it on the first Start press. Neither
-  fetches it on Save-Data or a 2G connection unless you choose 3D.
-- The Signals panel (`D`) shows which view is running, its quality tier and frame rate.
+- three.js starts loading when the page does, on every device. While it loads nothing is drawn in 2D: the
+  intro card sits on the plain night background and both Start buttons say "Loading stadium…" until the 3D
+  scene has drawn its first frame, so the first race is already 3D.
+- The classic side view shows only after a hard failure, or under `?renderer=2d` (developer and test
+  override, never saved). Hard failures: three.js cannot load from either CDN host (or times out), WebGL2 is
+  missing, the scene cannot be created after three automatic attempts over a few seconds, or the graphics
+  context keeps being lost. The page then says why in a notice that stays, with a Reload button, and the
+  Signals panel says why too.
+- A lost graphics context is recovered in place: the scene keeps its canvas, a running race pauses under a
+  "Restoring graphics…" notice, and a restore resumes it. If no restore comes within 3 s, or the tab is
+  visible with a lost context, the scene is made again on a fresh canvas. Three automatic attempts, then a
+  hard failure; the count resets after 30 s of stable drawing.
+- `?tier=0..3` locks the 3D quality tier (3 is the lowest). The quality controller still steps the tier down
+  on a slow device; its verdict that 3D is "too slow" is only noted in the view events and never leaves 3D.
+- The Signals panel (`D`) shows the 3D view line (quality tier, frame rate), and the last few view events
+  (loading, loss, restore, re-creation, failure) with their times.
 
 Performance on real phones has not been measured yet.
 

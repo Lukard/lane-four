@@ -9,24 +9,27 @@
      tier          0..3 to start there; omit to pick (coarse pointer: T1 else T0, stepped from the stored tier)
      lockTier      true: never change tier and never fall back for speed (?tier=N, tests)
      reduceMotion  initial only; render(ctx) re-reads ctx.reduceMotion every frame
-     failIfMajorPerformanceCaveat  default true; pass false under ?renderer=3d
-     onFallback    function({ reason, message, tier, emergency }) called once when 3D must give way to 2D:
-                   reason 'context-lost' (scene already disposing itself), 'slow' or 'emergency'
+     onContextLost      function({ cause }) the graphics context is lost ('event' for webglcontextlost, 'poll' when
+                        render() saw it first, 'visibility' when the tab became visible and found it lost). The scene
+                        stays alive on its canvas, draws nothing (render() returns false) and waits for a restore.
+     onContextRestored  function() the context is back and three.js has re-initialised itself: render() draws again
+     onFallback    function({ reason, message, tier, emergency }) called once when the quality controller gives up
+                   on speed: reason 'slow' or 'emergency'. The scene carries on drawing; what to do is the app's call.
      dpr, coarse, storage   overrides for devicePixelRatio, (pointer:coarse) and localStorage (tests)
 
-   scene.render(ctx)    once per rAF while 3D is the visible view; returns true when it drew a frame.
+   scene.render(ctx)    once per rAF; returns true when it drew a frame (false while the context is lost).
                         ctx = { race, av, phase, particles, popups, t, dt, reduceMotion, poseFps, mode, sheet }
                         (av = S.av, particles = S.particles, popups = S.popups, t seconds, dt clamped seconds,
                         poseFps = S.poseFps, mode 'camera' | 'manual', sheet true while the intro or the results
                         sheet covers the picture: 15 fps). Allocation free except popup style strings.
-   scene.idle(ctx)      once per rAF while the scene exists but 2D is visible (feeds the 2D pose-rate baseline)
    scene.onEvent(e)     every race event: 'hit' shakes the camera, 'clear' 'star' 'finish' cheer the stands
    scene.layout()       re-read the canvas size and DPR; true if anything changed
    scene.setTier(n)     force a tier (debug); scene.discardTiming() after anything that disturbs frame times
    scene.stats()        { line, tier, tierName, rig, fps, p95ms, megapixels, calls, triangles, ... } (allocates; <= 4 Hz)
    scene.project(x,y,z) pixel position of a point (race x, height, three Z = minus race z) as { x, y, depth }
    scene.probe()        render, then read a 7x7 grid of pixels in the same task
-   scene.forceContextLoss(), scene.dispose() (idempotent), scene.parts (debug handles)
+   scene.forceContextLoss(), scene.forceContextRestore() (debug: WEBGL_lose_context), scene.dispose() (idempotent,
+                        swaps the canvas for a fresh one), scene.parts (debug handles)
    Properties: canvas, tier, rig, lost, disposed, drawn (frames drawn). */
 (function (root) {
   'use strict';
@@ -137,7 +140,8 @@
     let tier = TIERS[tierIdx];
 
     // A canvas that has had a WebGL context can never get another one, so retiring it leaves a pristine
-    // clone (same id and attributes, hidden) in its place for the next create().
+    // clone (same id and attributes, hidden) in its place for the next create(). A canvas whose
+    // getContext() failed is swapped too, so a retry never depends on how the browser treats it.
     function retireCanvas() {
       if (!canvas.parentNode) return;
       const fresh = canvas.cloneNode(false);
@@ -156,10 +160,13 @@
     try {
       gl = canvas.getContext('webgl2', {
         antialias: false, alpha: false, depth: true, stencil: false, premultipliedAlpha: true, preserveDrawingBuffer: false,
-        powerPreference: 'default', failIfMajorPerformanceCaveat: o.failIfMajorPerformanceCaveat !== false,
+        powerPreference: 'default',
       });
     } catch (e) { gl = null; }
-    if (!gl) throw new Error('WebGL2 is not available (the context could not be created).');
+    if (!gl) {
+      retireCanvas();
+      throw new Error('WebGL2 is not available (the context could not be created).');
+    }
     let renderer;
     try {
       renderer = new T.WebGLRenderer({ canvas, context: gl, antialias: false, alpha: false, stencil: false, preserveDrawingBuffer: false, powerPreference: 'default' });
@@ -194,6 +201,7 @@
       dead = true;
       if (onVis && doc) doc.removeEventListener('visibilitychange', onVis);
       canvas.removeEventListener('webglcontextlost', onLost);
+      canvas.removeEventListener('webglcontextrestored', onRestored);
       try { if (actors) actors.dispose(); } catch (e) { /* keep going */ }
       try { if (world) world.dispose(); } catch (e) { /* keep going */ }
       scene.clear();
@@ -201,20 +209,49 @@
       try { if (!gl.isContextLost()) renderer.forceContextLoss(); } catch (e) { /* keep going */ }
       retireCanvas();
     }
+    // The quality controller giving up on speed. Said once; the scene itself carries on drawing.
     function fail(reason, message, emergency) {
       if (failed) return;
       failed = { reason, message };
       if (typeof o.onFallback === 'function') {
         try { o.onFallback({ reason, message, tier: tierIdx, emergency: !!emergency }); } catch (e) { /* the app's problem */ }
       }
-      if (reason === 'context-lost') disposeAll();
+    }
+    // A lost context is not a failure of the scene: it keeps its canvas and everything three.js holds, stops
+    // drawing, and picks up again when the browser restores the context. Whatever else is to be done about it
+    // (wait, re-create) is the app's call. Reported once per loss, however it was noticed.
+    function markLost(cause) {
+      if (dead || lost) return;
+      lost = true;
+      if (typeof o.onContextLost === 'function') {
+        try { o.onContextLost({ cause }); } catch (e) { /* the app's problem */ }
+      }
     }
     function onLost(ev) {
-      ev.preventDefault();
-      lost = true;
-      fail('context-lost', 'The graphics context was lost.', true);
+      ev.preventDefault(); // without this the browser never restores the context
+      markLost('event');
+    }
+    // Registered after three.js's own listener, so by now it has re-initialised its state: buffers and
+    // textures are rebuilt from what the objects still hold on the next render.
+    function onRestored() {
+      if (dead || !lost) return;
+      lost = false;
+      try {
+        renderer.setClearColor(CLEAR); // three.js starts its background state again at black
+        actors.prewarm(true); // and programs compile lazily: do it now, not in the middle of the next frame
+        renderer.compile(scene, camera);
+        actors.prewarm(false);
+      } catch (e) { /* the next frame says so */ }
+      ctl.clear();
+      nextDraw = 0;
+      accDt = 0;
+      lastCall = -1;
+      if (typeof o.onContextRestored === 'function') {
+        try { o.onContextRestored(); } catch (e) { /* the app's problem */ }
+      }
     }
     canvas.addEventListener('webglcontextlost', onLost);
+    canvas.addEventListener('webglcontextrestored', onRestored);
 
     try {
       if (!gl || gl.isContextLost()) throw new Error('WebGL context unavailable');
@@ -296,14 +333,14 @@
 
     // ---- the frame
     function render(ctx) {
-      if (dead) return false;
+      if (dead || lost) return false;
+      if (gl.isContextLost()) { markLost('poll'); return false; }
       const t = ctx.t, tMs = t * 1000;
       nowMs = tMs;
-      if (!visible) { // 3D just became the visible view
+      if (!visible) { // the first frame
         visible = true;
         ctl.setView3d(tMs, true);
         ctl.discard(2);
-        if (failed && failed.reason !== 'context-lost') { failed = null; ctl.reset(); ctl.setView3d(tMs, true); }
         nextDraw = 0;
         accDt = 0;
         lastCall = -1;
@@ -350,14 +387,6 @@
       }
       if (verdict === 'to2d') fail(ctl.emergency ? 'emergency' : 'slow', ctl.emergency ? 'The 3D view could not keep up.' : 'The 3D view is too slow on this device.', ctl.emergency);
       return did;
-    }
-
-    // The scene exists but 2D is what the player sees: keep the 2D pose rate as the baseline.
-    function idle(ctx) {
-      if (dead) return;
-      const tMs = ctx.t * 1000;
-      if (visible) { visible = false; ctl.setView3d(tMs, false); }
-      if (ctx.mode === 'camera' && ctx.poseFps > 0) ctl.pose(tMs, ctx.poseFps);
     }
 
     function onEvent(e) {
@@ -428,7 +457,7 @@
       nextDraw = 0;
       accDt = 0;
       lastCall = -1;
-      if (gl.isContextLost()) onLost({ preventDefault() {} });
+      if (gl.isContextLost()) markLost('visibility');
     };
     doc.addEventListener('visibilitychange', onVis);
 
@@ -448,9 +477,10 @@
     }
 
     return {
-      canvas, render, idle, onEvent, layout, setTier, project, probe, stats,
+      canvas, render, onEvent, layout, setTier, project, probe, stats,
       discardTiming() { ctl.discard(2); },
       forceContextLoss() { if (!dead) renderer.forceContextLoss(); },
+      forceContextRestore() { if (!dead) renderer.forceContextRestore(); },
       dispose: disposeAll,
       get tier() { return tierIdx; },
       get rig() { return cam.rig.name; },

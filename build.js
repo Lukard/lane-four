@@ -15,6 +15,7 @@ const PARTS = {
   WORLD3D: 'world3d.js',
   ACTORS3D: 'actors3d.js',
   SCENE3D: 'scene3d.js',
+  VIEWLIFE: 'viewlife.js',
   APP: 'app.js',
 };
 
