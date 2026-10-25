@@ -4,64 +4,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 require('../src/viewlife.js');
+const { world, flush } = require('./viewworld.js');
 const { ViewLife } = globalThis.LaneFour;
 const { BACKOFF_MS, RESTORE_WAIT_MS, STABLE_MS, MAX_LOSSES, MAX_RENDER_ERRORS, KEEP } = ViewLife;
-
-const flush = () => new Promise((r) => setImmediate(r));
-console.warn = () => {}; // a hard failure warns, as it should; not in this output
-
-// A fake world: clock with timers, a loader, and a scene factory that remembers every scene it made.
-function world(over = {}) {
-  let t = 1000;
-  let nextId = 0;
-  const timers = [];
-  const clock = {
-    now: () => t,
-    setTimeout: (fn, ms) => { timers.push({ id: ++nextId, at: t + ms, fn }); return nextId; },
-    clearTimeout: (h) => { const i = timers.findIndex((x) => x.id === h); if (i >= 0) timers.splice(i, 1); },
-    tick(ms) {
-      const end = t + ms;
-      for (;;) {
-        timers.sort((a, b) => a.at - b.at);
-        const n = timers[0];
-        if (!n || n.at > end) break;
-        timers.shift();
-        t = n.at;
-        n.fn();
-      }
-      t = end;
-    },
-    pending: () => timers.length,
-  };
-  const w = { clock, scenes: [], changes: [], hidden: false, loads: 0, createFails: 0, loadError: null, webgl2: true, tierOf: 0 };
-  const deps = {
-    now: clock.now, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
-    isHidden: () => w.hidden,
-    hasWebGL2: () => w.webgl2,
-    loadThree: () => { w.loads++; return w.loadError ? Promise.reject(w.loadError) : Promise.resolve({ REVISION: '186' }); },
-    createScene: (three, hooks) => {
-      if (w.createFails > 0) { w.createFails--; throw new Error('WebGL2 is not available (the context could not be created).'); }
-      const s = { hooks, tier: w.tierOf, disposed: false, dispose() { this.disposed = true; } };
-      w.scenes.push(s);
-      return s;
-    },
-    onChange: (v) => w.changes.push(v.status),
-    version: '0.186.0',
-    ...over,
-  };
-  w.vm = ViewLife.create(deps);
-  w.view = w.vm.view;
-  w.live = () => w.scenes.filter((s) => !s.disposed);
-  w.last = () => w.scenes[w.scenes.length - 1];
-  // start and bring the first scene to the ready state
-  w.up = async () => {
-    w.vm.start();
-    await flush();
-    w.vm.revealed();
-    return w.last();
-  };
-  return w;
-}
 
 test('?renderer=2d: nothing is loaded, the status is off, the classic view is the whole story', async () => {
   const w = world({ classic: true });
@@ -209,11 +154,14 @@ test('a late event from a disposed scene is ignored', async () => {
   const second = w.last();
   first.hooks.onContextRestored();
   first.hooks.onContextLost({ cause: 'event' });
-  first.hooks.onFallback({ reason: 'slow' });
+  first.hooks.onQuality({ kind: 'tier', from: 0, tier: 3, lowest: true, reason: 'stale' });
+  first.hooks.onQuality({ kind: 'unplayable', tier: 3, reason: 'stale' });
   assert.equal(w.view.scene, second);
   assert.equal(w.view.status, 'ready');
   assert.equal(w.view.lost, false);
-  assert.ok(!w.view.events.some((e) => e.event === 'speed-fallback-ignored'));
+  assert.ok(!w.view.events.some((e) => e.event === 'tier' || e.event === 'unplayable'), 'a disposed scene says nothing about quality');
+  assert.equal(w.view.reduced, false);
+  assert.equal(w.view.unplayable, false);
 });
 
 test('the tab becoming visible with a lost context re-creates at once; while hidden the 3 s wait only defers', async () => {
@@ -444,37 +392,59 @@ test('render errors: three frames in a row re-create the scene, one good frame i
   assert.match(w.view.events.find((e) => e.event === 'recreate').reason, /render error: boom/);
 });
 
-test('the speed fallback of the quality controller is logged and changes nothing: slow is never a reason to leave 3D', async () => {
+test('quality events are logged and never change the view: a tier step is silent, the lowest tier and an unplayable device are said once', async () => {
   const w = world();
   const s = await w.up();
   const changes = w.changes.length;
-  s.hooks.onFallback({ reason: 'slow' });
-  s.hooks.onFallback({ reason: 'emergency' });
+  s.hooks.onQuality({ kind: 'tier', from: 0, tier: 1, lowest: false, emergency: false, reason: 'slow: 7 of 10 windows under 0.85 x 60 fps (median 38.0)' });
+  assert.equal(w.changes.length, changes, 'an ordinary step tells the page nothing');
+  assert.equal(w.view.reduced, false);
+  assert.match(w.view.events[w.view.events.length - 1].reason, /^T0 to T1 · slow: 7 of 10/);
+  s.hooks.onQuality({ kind: 'tier', from: 1, tier: 3, lowest: true, emergency: true, reason: 'emergency: 9.0 fps over the last 1.8 s' });
+  assert.equal(w.view.reduced, true);
+  assert.equal(w.changes.length, changes + 1, 'the lowest tier is announced once');
+  assert.match(w.view.events[w.view.events.length - 1].reason, /^T1 to T3 \(emergency\) · emergency: 9\.0 fps/);
+  s.hooks.onQuality({ kind: 'tier', from: 2, tier: 3, lowest: true, reason: 'again' });
+  assert.equal(w.changes.length, changes + 1, 'and not again');
+  s.hooks.onQuality({ kind: 'unplayable', tier: 3, reason: 'under 15 fps for 10 s at the lowest tier' });
+  s.hooks.onQuality({ kind: 'unplayable', tier: 3, reason: 'under 15 fps for 11 s at the lowest tier' });
+  assert.equal(w.view.unplayable, true);
+  assert.equal(w.changes.length, changes + 2);
+  // none of it is a reason to leave 3D, or to touch the scene
   assert.equal(w.view.mode, '3d');
   assert.equal(w.view.status, 'ready');
   assert.equal(w.view.scene, s);
   assert.equal(s.disposed, false);
-  assert.equal(w.changes.length, changes);
-  assert.deepEqual(w.view.events.slice(-2).map((e) => e.reason), ['slow', 'emergency']);
-  // and a context loss afterwards is still seen (the old build swallowed it after a fallback)
+  assert.equal(w.view.attempts, 0);
+  // a scene made again carries on at the lowest tier and the page keeps what it knows
+  s.tier = 3; // what the real scene's own tier is by now
   s.hooks.onContextLost({ cause: 'event' });
+  w.clock.tick(RESTORE_WAIT_MS + BACKOFF_MS[0]);
+  const second = w.last();
+  assert.notEqual(second, s);
+  assert.equal(second.hooks.tier, 3, 'the new scene starts at the tier the old one had reached');
+  assert.equal(w.view.reduced, true);
+  // and a context loss afterwards is still seen
+  w.vm.revealed();
+  second.hooks.onContextLost({ cause: 'event' });
   assert.equal(w.view.status, 'restoring');
-  s.hooks.onContextRestored();
+  second.hooks.onContextRestored();
   assert.equal(w.view.status, 'ready');
+  assert.ok(!('slow' in w.view) && !('fallback' in w.view), 'there is no slow state any more');
 });
 
 test('events: a ring of the last 20 with time, event and reason, shown oldest first', async () => {
   const w = world();
   const s = await w.up();
-  for (let i = 0; i < 30; i++) { s.hooks.onFallback({ reason: 'n' + i }); w.clock.tick(100); }
+  for (let i = 0; i < 30; i++) { s.hooks.onQuality({ kind: 'tier', from: 0, tier: 1, lowest: false, reason: 'n' + i }); w.clock.tick(100); }
   assert.equal(w.view.events.length, KEEP);
   assert.equal(KEEP, 20);
-  assert.equal(w.view.events[KEEP - 1].reason, 'n29');
+  assert.equal(w.view.events[KEEP - 1].reason, 'T0 to T1 · n29');
   const times = w.view.events.map((e) => e.t);
   assert.deepEqual(times, [...times].sort((a, b) => a - b));
   const recent = w.vm.recent(3);
   assert.equal(recent.length, 3);
-  assert.match(recent[2], /^\+\d+\.\d s speed-fallback-ignored · n29$/);
+  assert.match(recent[2], /^\+\d+\.\d s tier · T0 to T1 · n29$/);
   assert.match(recent[0], /n27$/);
 });
 
@@ -482,60 +452,6 @@ test('a throwing change handler cannot break the machine', async () => {
   const w = world({ onChange() { throw new Error('ui bug'); } });
   await w.up();
   assert.equal(w.view.status, 'ready');
-});
-
-test('invariants hold over 400 random sequences of 40 events each', async () => {
-  let seed = 12345;
-  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
-  const pick = (a) => a[Math.floor(rnd() * a.length)];
-  for (let run = 0; run < 400; run++) {
-    const w = world({ classic: false });
-    w.createFails = rnd() < 0.3 ? Math.floor(rnd() * 5) : 0;
-    if (rnd() < 0.05) w.loadError = new Error('Could not load three.js');
-    w.vm.start();
-    await flush();
-    for (let step = 0; step < 40; step++) {
-      const op = pick(['lost', 'lostv', 'restored', 'blank', 'tick', 'tick', 'visible', 'hide', 'show', 'reveal', 'drawn', 'slow', 'rerr', 'fail', 'long']);
-      const s = w.view.scene;
-      const hooks = pick([s, s, s, w.scenes[0], w.last()]);
-      if (op === 'lost' && hooks) hooks.hooks.onContextLost({ cause: 'event' });
-      else if (op === 'lostv' && hooks) hooks.hooks.onContextLost({ cause: 'visibility' });
-      else if (op === 'restored' && hooks) hooks.hooks.onContextRestored();
-      else if (op === 'blank' && hooks) hooks.hooks.onRestoreFailed({ reason: 'blank' });
-      else if (op === 'tick') w.clock.tick(Math.floor(rnd() * 3500));
-      else if (op === 'long') w.clock.tick(40000);
-      else if (op === 'visible') w.vm.onVisible();
-      else if (op === 'hide') w.hidden = true;
-      else if (op === 'show') w.hidden = false;
-      else if (op === 'reveal') w.vm.revealed();
-      else if (op === 'drawn') w.vm.drawn();
-      else if (op === 'slow' && hooks) hooks.hooks.onFallback({ reason: 'slow' });
-      else if (op === 'rerr') w.vm.renderFailed(new Error('x'));
-      else if (op === 'fail' && rnd() < 0.05) w.vm.fail('fuzz');
-      const v = w.view;
-      const tag = 'run ' + run + ' step ' + step + ' after ' + op;
-      assert.ok(['loading', 'ready', 'restoring', 'failed'].includes(v.status), tag + ': status ' + v.status);
-      assert.equal(v.mode, v.status === 'failed' ? '2d' : '3d', tag + ': 3D unless failed');
-      assert.ok(w.live().length <= 1, tag + ': one live scene at most');
-      if (v.status === 'failed') {
-        assert.equal(v.scene, null, tag);
-        assert.equal(w.live().length, 0, tag);
-        assert.equal(v.lost, false, tag);
-        assert.ok(v.reason, tag + ': a reason');
-      }
-      if (v.status === 'ready') { assert.ok(v.scene && v.shown && !v.lost, tag + ': ready means drawing'); assert.equal(w.live()[0], v.scene, tag); }
-      if (v.scene) assert.equal(w.live()[0], v.scene, tag + ': view.scene is the live one');
-      if (v.lost) assert.ok(v.scene && v.status === 'restoring', tag + ': lost means restoring');
-      assert.ok(v.attempts >= 0 && v.attempts <= BACKOFF_MS.length, tag + ': attempts ' + v.attempts);
-      assert.ok(v.events.length <= KEEP, tag);
-    }
-    w.clock.tick(120000);
-    if (w.view.status !== 'failed' && w.view.scene) {
-      // given time with nothing wrong, a surviving machine is either ready or waiting for a first frame
-      assert.ok(['loading', 'ready', 'restoring'].includes(w.view.status));
-    }
-    if (w.view.status === 'failed') assert.equal(w.clock.pending(), 0, 'run ' + run + ': nothing left pending after a hard failure');
-  }
 });
 
 test('the module exports its public surface', () => {

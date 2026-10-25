@@ -119,9 +119,12 @@ test('the view policy is in the sources: 3D only, no swaps, no connection skip, 
   const app = fs.readFileSync(path.join(ROOT, 'src', 'app.js'), 'utf8');
   const all = SOURCES.filter((f) => f.endsWith('.js')).map((f) => fs.readFileSync(path.join(ROOT, 'src', f), 'utf8')).join('\n');
   for (const gone of ['AUTO_SWAP', 'ASKED_SWAP', 'wantNow', 'maybeSwapView', 'threeSkipReason', 'probeWebGL2', 'saveData', 'effectiveType',
-    'failIfMajorPerformanceCaveat', 'toggleView', 'chooseView', 'btnView', 'preloadThree', 'view.slow', 'forced3d']) {
+    'failIfMajorPerformanceCaveat', 'toggleView', 'chooseView', 'btnView', 'preloadThree', 'view.slow', 'forced3d',
+    'onFallback', 'speed-fallback', 'to2d', 'setView3d', 'POSE_FLOOR', 'POSE_HOLD_MS']) {
     assert.ok(!all.includes(gone), gone + ' is gone');
   }
+  const scene = fs.readFileSync(path.join(ROOT, 'src', 'scene3d.js'), 'utf8');
+  assert.ok(!/poseFps|\.pose\(/.test(scene), 'the scene never sees the pose rate: it is a camera property, not a 3D one');
   assert.ok(!/store\.set\(\s*'renderer'/.test(app), 'the View choice is never written');
   assert.ok(!/store\.get\(\s*'renderer'/.test(app), 'and never read');
   assert.ok(/store\.del\(\s*'renderer'\s*\)/.test(app), 'the stale key is deleted at boot');

@@ -218,20 +218,22 @@ def e_hidden(p):
 
 
 def e_speed(p):
-    # A speed fallback of the quality controller, then a loss: the old build swallowed the loss after a fallback
-    # and the player saw a blank screen. No ?tier here: a locked tier never asks the controller.
+    # A real quality step (a stall that takes the picture to the lowest tier), then a loss: the old build swallowed a
+    # loss after a speed fallback and the player saw a blank screen. No ?tier here: a locked tier never asks the controller.
     CURRENT[0] = "E speed"
-    print("=== E: a speed fallback, then a loss ===")
-    b, page, logs = e_page(p, viewport={"width": 390, "height": 844}, url="", touch=True)
+    print("=== E: the quality at its lowest, then a loss ===")
+    b, page, logs = e_page(p, viewport={"width": 390, "height": 844}, url="", touch=True, init=[STRESS])
     if not check("E: the 3D view is up (unlocked tier)", wait_js(page, READY_3D, 45), vinfo(page)):
         b.close()
         return
+    keys_to_ready(page)
+    page.wait_for_timeout(4500)
     scene_before = vinfo(page)["sceneId"]
-    page.evaluate("() => { window.laneFour.view.scene.parts.ctl.check = () => 'to2d'; }")
-    check("E: a speed fallback verdict is noted and ignored: still 3D, same scene, nothing shown", wait_js(page, "() => window.laneFour.view.events.some((e) => e.event === 'speed-fallback-ignored')", 15) and vinfo(page)["mode"] == "3d" and vinfo(page)["sceneId"] == scene_before and vinfo(page)["noticeKind"] == "" and vinfo(page)["hidden2d"], vinfo(page)["events"])
-    page.evaluate("() => { delete window.laneFour.view.scene.parts.ctl.check; }")
+    page.evaluate("() => window.__stall(120, 20)")
+    check("E: a severe stall takes the quality to the lowest tier: still 3D, same scene, nothing blocking", wait_js(page, "() => window.laneFour.view.scene.tier === 3", 25) and vinfo(page)["mode"] == "3d" and vinfo(page)["sceneId"] == scene_before and vinfo(page)["noticeKind"] == "" and vinfo(page)["hidden2d"], vinfo(page))
+    page.evaluate("() => window.__stall(0)")
     lose(page)
-    check("E: a loss after a speed fallback is still seen (not swallowed)", wait_status(page, "restoring", 5), vinfo(page))
+    check("E: a loss at the lowest quality is still seen (not swallowed)", wait_status(page, "restoring", 5), vinfo(page))
     restore(page)
     check("E: ... and recovered, drawing, not a blank screen", wait_status(page, "ready", 10), vinfo(page))
     probe_ok(page, "E")
@@ -243,7 +245,7 @@ def e_speed(p):
     page.evaluate("() => { window.laneFour.view.scene.parts.renderer.render = () => { throw new Error('boom'); }; }")
     check("E: a scene whose render() throws three frames in a row is re-created", wait_js(page, f"() => window.laneFour.view.status === 'ready' && window.laneFour.view.attempts === {a0} + 1", 15) and "render-error" in vinfo(page)["events"], vinfo(page)["events"])
     probe_ok(page, "E")
-    page.screenshot(path=os.path.join(OUT, "E_after_speed_fallback_phone.png"))
+    page.screenshot(path=os.path.join(OUT, "E_after_lowest_tier_phone.png"))
     errs = errors_of(logs)
     check("E: no console or page errors (speed)", not errs, errs[:5])
     b.close()

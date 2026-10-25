@@ -15,26 +15,32 @@ D: three.js unreachable / WebGL2 cannot start       -> hard failure: classic vie
                                                       Reload button, the Signals line says why, race plays in 2D
 E: graphics context loss                            -> recovered in place in 3D in every phase, a loss during
                                                       a race pauses it and resumes it, re-creation on a fresh
-                                                      canvas when no restore comes, a loss after a speed
-                                                      fallback, a transient getContext failure, repeated loss;
+                                                      canvas when no restore comes, a loss at the lowest
+                                                      quality, a transient getContext failure, repeated loss;
                                                       texture canvases emptied (repainted in place, or the
                                                       scene re-created, never a blank picture shown); and a
                                                       real GPU process crash (CDP), at the intro and in a race
+F: the quality controller on an unlocked tier       -> the view stays 3D whatever the device does: a camera at
+                                                      15 or 20 fps with rAF at full rate, a cadence cap to
+                                                      30 fps mid-session, a stalled main thread (single steps;
+                                                      a severe stall goes straight to the lowest tier, even in
+                                                      a race; one hint at the lowest tier), a stored tier; the
+                                                      tier only goes down, one quality line shows once
 
 This file is only the runner (server, drift guard, which runs, the summary). The runs are in
-test/browser_tests/: run_a.py .. run_e.py, with common.py (paths, the stand-in network, page set-up, check())
+test/browser_tests/: run_a.py .. run_f.py, with common.py (paths, the stand-in network, page set-up, check())
 and probes.py (page-side probes of the 3D picture).
 
-Usage:  python3 test/browser_test.py [A][B][C][D][E]     (default: BCDE)
+Usage:  python3 test/browser_test.py [A][B][C][D][E][F]     (default: BCDEF)
 
 B (as 2D) and D need only Playwright (pip install playwright && python3 -m playwright install
-chromium). Every 3D run (B, C, E) also needs `npm install`: they serve three.js from
+chromium). Every 3D run (B, C, E, F) also needs `npm install`: they serve three.js from
 node_modules/three, which stands in for the CDN. Without it they print SKIP and D still runs. A also
 needs local copies of what the page loads from the network, see README.md. Screenshots go to
 test/shots/ (suffix _3d or _2d for the two views).
 
-The 3D runs use ?tier=3: the lowest quality tier on SwiftShader, locked so the quality controller cannot
-change it under the test.
+B, C and E use ?tier=3: the lowest quality tier on SwiftShader, locked so the quality controller cannot
+change it under the test. Run F is the one that does not lock it: it is about the controller.
 """
 import functools
 import http.server
@@ -59,8 +65,9 @@ from browser_tests.run_b import test_b
 from browser_tests.run_c import test_c
 from browser_tests.run_d import test_d, test_d2
 from browser_tests.run_e import test_e
+from browser_tests.run_f import test_f
 
-WHICH = (sys.argv[1] if len(sys.argv) > 1 else "BCDE").upper()
+WHICH = (sys.argv[1] if len(sys.argv) > 1 else "BCDEF").upper()
 
 if "A" in WHICH:
     missing = [p for p in (MP, MODEL, Y4M) if not os.path.exists(p)]
@@ -111,7 +118,7 @@ def run(name, fn, *args):
 
 
 with sync_playwright() as p:
-    if any(c in WHICH for c in "BCDE"):
+    if any(c in WHICH for c in "BCDEF"):
         run("drift", drift_guard)
     if "A" in WHICH:
         run("A", test_a, p)
@@ -139,6 +146,11 @@ with sync_playwright() as p:
             run("E", test_e, p)
         else:
             print("SKIP E: node_modules/three is missing (run npm install)")
+    if "F" in WHICH:
+        if HAVE_THREE:
+            run("F", test_f, p)
+        else:
+            print("SKIP F: node_modules/three is missing (run npm install)")
 srv.shutdown()
 
 print()

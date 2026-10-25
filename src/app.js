@@ -1595,7 +1595,7 @@
       onContextLost: hooks.onContextLost,
       onContextRestored: hooks.onContextRestored,
       onRestoreFailed: hooks.onRestoreFailed,
-      onFallback: hooks.onFallback,
+      onQuality: hooks.onQuality,
     });
   }
 
@@ -1608,6 +1608,7 @@
     if (view.mode === '2d') show2d();
     else if (view.shown && view.lost) el.world3d.classList.remove('on'); // a lost canvas is blank or glitched: show the night instead (it fades back in from renderWorld, after a frame)
     syncNotice();
+    syncQNote();
     syncStart();
     syncGraphicsHold();
   }
@@ -1673,6 +1674,32 @@
     el.btnReload.hidden = kind !== 'failed';
   }
 
+  // Quality is the scene's business and never costs the player 3D. Lowering a tier says nothing; once the lowest tier
+  // is reached there is ONE small line ('reduced graphics'), and if even that runs under 15 fps for 10 s a hint with
+  // tips instead. A line stays until it is dismissed (it is not a toast and does not expire), is never shown again
+  // once dismissed, and sits out the countdown and the race (style.css). The Signals panel has the details.
+  const QNOTE = {
+    reduced: 'Reduced graphics for smooth play',
+    hint: 'Still struggling. Close other tabs, turn off Low Power Mode or Energy Saver, plug in, or move the camera back.',
+  };
+  const qDismissed = { reduced: false, hint: false };
+  const qnotes = Array.from(document.querySelectorAll('.qnote')); // under the HUD, and one in each sheet
+  let qKind = '';
+  function syncQNote() {
+    let kind = '';
+    if (view.mode === '3d') {
+      if (view.unplayable && !qDismissed.hint) kind = 'hint';
+      else if (view.reduced && !view.unplayable && !qDismissed.reduced) kind = 'reduced';
+    }
+    if (kind === qKind) return;
+    qKind = kind;
+    for (const n of qnotes) {
+      n.dataset.kind = kind;
+      n.hidden = !kind;
+      n.querySelector('.qtext').textContent = kind ? QNOTE[kind] : '';
+    }
+  }
+
   // While the graphics are being restored a running race is paused, and it picks up again by itself.
   let gfxHeld = false;
   function syncGraphicsHold() {
@@ -1694,7 +1721,7 @@
   // One object, reused every frame, so the render path allocates nothing of its own.
   const rctx = {
     race: null, av: S.av, phase: 'intro', particles: null, popups: null,
-    t: 0, dt: 0, reduceMotion, poseFps: 0, mode: null, sheet: false,
+    t: 0, dt: 0, reduceMotion, sheet: false,
   };
   function renderWorld(t, dt) {
     if (view.mode === '2d') { render2d(t); return; }
@@ -1706,9 +1733,7 @@
     rctx.popups = S.popups;
     rctx.t = t;
     rctx.dt = dt;
-    rctx.poseFps = S.poseFps;
-    rctx.mode = S.mode;
-    rctx.sheet = S.phase === 'intro' || !el.results.hidden; // behind a sheet the scene draws at 15 fps
+    rctx.sheet = S.phase === 'intro' || !el.results.hidden; // behind a sheet the scene draws at 15 fps and does not measure its frame rate
     let drew = false;
     try {
       drew = sc.render(rctx);
@@ -1812,6 +1837,11 @@
     if (S.mode === 'camera' && S.phase !== 'intro') enterSetup();
   });
   el.btnReload.addEventListener('click', () => window.location.reload());
+  document.querySelectorAll('.qnote .qx').forEach((b) => b.addEventListener('click', () => {
+    if (qKind) qDismissed[qKind] = true;
+    if (qKind === 'hint') qDismissed.reduced = true;
+    syncQNote();
+  }));
   document.querySelectorAll('.pick button[data-dist]').forEach((b) => {
     b.addEventListener('click', () => {
       settings.distance = Number(b.dataset.dist);

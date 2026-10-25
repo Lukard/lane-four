@@ -13,7 +13,7 @@ require('../src/actors3d.js');
 require('../src/scene3d.js');
 const LF = globalThis.LaneFour;
 const G = LF.Geom;
-const { ChaseCam, pickStartTier, tierKey } = LF.Scene3D;
+const { ChaseCam, pickStartTier, settledRecord, tierKey } = LF.Scene3D;
 
 const near = (a, b, eps = 1e-9) => Math.abs(a - b) <= eps;
 const av = (o) => ({ phase: 0, target: 0, crouch: 0, air: 0, stumble: 0, gait: 0, charged: false, t: 0, ...o });
@@ -141,6 +141,23 @@ test('tierKey and pickStartTier: coarse starts at T1, a fresh stored tier steps 
   assert.equal(pickStartTier({ coarse: false, stored: rec(9), key, now }), 3, 'clamped to T3');
 });
 
+test('settledRecord: a tier is remembered after 30 s of racing, the lowest one too; a healthy default visit writes nothing', () => {
+  const key = '3|393', now = 1.7e12;
+  const rec = (o) => settledRecord({ tier: 1, def: 0, hadStored: false, runMs: 30000, key, now, ...o });
+  assert.deepEqual(rec({}), { k: key, t: 1, at: now });
+  assert.deepEqual(rec({ tier: 3 }), { k: key, t: 3, at: now }, 'the lowest tier is persisted like any other');
+  assert.equal(rec({ runMs: 29999 }), null, 'not before 30 s of racing');
+  assert.equal(rec({ tier: 0 }), null, 'the default tier with nothing stored: nothing to write');
+  assert.deepEqual(rec({ tier: 0, hadStored: true }), { k: key, t: 0, at: now }, 'a stored record is healed once the default holds');
+  assert.equal(rec({ tier: 1, def: 1 }), null, 'a coarse pointer default of T1 is not news either');
+  assert.equal(rec({ runMs: NaN }), null);
+  // what a later visit makes of it: one step above the stored tier, so the cascade is not run from the top
+  const stored = rec({ tier: 3 });
+  assert.equal(pickStartTier({ coarse: false, stored, key, now: now + 1000 }), 2);
+  assert.equal(pickStartTier({ coarse: true, stored, key, now: now + 1000 }), 2);
+  assert.equal(pickStartTier({ coarse: false, stored: rec({ tier: 1 }), key, now: now + 1000 }), 0);
+});
+
 const threeP = import('three').catch(() => null);
 const fakeCanvas = (getContext) => {
   const parent = { replaced: 0, replaceChild() { this.replaced++; } };
@@ -169,6 +186,6 @@ test('create validates its inputs and fails cleanly without a WebGL2 context', a
 });
 
 test('the module exports its public surface', () => {
-  assert.deepEqual(Object.keys(LF.Scene3D).sort(), ['ChaseCam', 'create', 'pickStartTier', 'tierKey']);
+  assert.deepEqual(Object.keys(LF.Scene3D).sort(), ['ChaseCam', 'create', 'pickStartTier', 'settledRecord', 'tierKey']);
   assert.equal(typeof LF.Scene3D.create, 'function');
 });

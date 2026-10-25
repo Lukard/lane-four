@@ -71,7 +71,7 @@ def three_race_checks(page, label, probes):
     if check(f"{label}: stats() answered mid-race", mid is not None):
         check(f"{label}: draw calls within 12..60", 12 <= mid["calls"] <= 60, mid["calls"])
         check(f"{label}: triangles under 60k", mid["triangles"] < 60000, mid["triangles"])
-        check(f"{label}: the Signals line is formatted", re.match(r"^View: 3D chase · T3 · \d+ fps \(p95 \d+ ms\) · [\d.]+ MP · \d+ calls · [\d.]+k tris · \w+$", mid["line"]) is not None, mid["line"])
+        check(f"{label}: the Signals line is formatted", re.match(r"^View: 3D chase · T3 · \d+ fps \(p95 \d+ ms\) · controller: tier locked · [\d.]+ MP · \d+ calls · [\d.]+k tris · \w+$", mid["line"]) is not None, mid["line"])
     first, end = probes.get("stats_first"), probes.get("stats_end")
     if check(f"{label}: stats() taken at x >= 10 and at the finish", first is not None and end is not None):
         check(f"{label}: geometries do not grow between x=10 and the finish", end["geometries"] - first["geometries"] <= 2, f"{first['geometries']} -> {end['geometries']}")

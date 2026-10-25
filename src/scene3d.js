@@ -6,8 +6,8 @@
      canvas        the #world3d element (it gets a WebGL2 context; dispose() swaps it for a fresh clone)
      popLayer      the #popLayer element
      race          the current LaneFour.Race
-     tier          0..3 to start there; omit to pick (coarse pointer: T1 else T0, stepped from the stored tier)
-     lockTier      true: never change tier and never fall back for speed (?tier=N, tests)
+     tier          0..3 to start there; omit to pick (coarse pointer: T1 else T0, one step above the stored tier)
+     lockTier      true: the quality controller is never asked and the tier never changes (?tier=N, tests)
      reduceMotion  initial only; render(ctx) re-reads ctx.reduceMotion every frame
      onContextLost      function({ cause }) the graphics context is lost ('event' for webglcontextlost, 'poll' when
                         render() saw it first, 'visibility' when the tab became visible and found it lost). The scene
@@ -18,19 +18,21 @@
                         are blank, which a real GPU process crash causes): the scene stays down, draws nothing, and the
                         app is to dispose it and create a new one. Called instead of onContextRestored, or, if the first
                         frame after it finds the textures blank, after it.
-     onFallback    function({ reason, message, tier, emergency }) called once when the quality controller gives up
-                   on speed: reason 'slow' or 'emergency'. The scene carries on drawing; what to do is the app's call.
+     onQuality     function(info) the quality controller acted. The scene is 3D whatever it says: there is no way out to 2D.
+                   { kind: 'tier', from, tier, lowest, emergency, reason }  after it lowered the tier (already applied)
+                   { kind: 'unplayable', tier, reason }  once, at the lowest tier, after 10 s under 15 fps
      dpr, coarse, storage   overrides for devicePixelRatio, (pointer:coarse) and localStorage (tests)
 
    scene.render(ctx)    once per rAF; returns true when it drew a frame (false while the context is lost).
-                        ctx = { race, av, phase, particles, popups, t, dt, reduceMotion, poseFps, mode, sheet }
+                        ctx = { race, av, phase, particles, popups, t, dt, reduceMotion, sheet }
                         (av = S.av, particles = S.particles, popups = S.popups, t seconds, dt clamped seconds,
-                        poseFps = S.poseFps, mode 'camera' | 'manual', sheet true while the intro or the results
-                        sheet covers the picture: 15 fps). Allocation free except popup style strings.
+                        sheet true while the intro or the results sheet covers the picture: drawn at 15 fps, and the
+                        quality controller does not measure). Allocation free except popup style strings.
    scene.onEvent(e)     every race event: 'hit' shakes the camera, 'clear' 'star' 'finish' cheer the stands
    scene.layout()       re-read the canvas size and DPR; true if anything changed
    scene.setTier(n)     force a tier (debug); scene.discardTiming() after anything that disturbs frame times
-   scene.stats()        { line, tier, tierName, rig, fps, p95ms, megapixels, calls, triangles, ... } (allocates; <= 4 Hz)
+   scene.stats()        { line, tier, tierName, rig, fps, p95ms, megapixels, calls, triangles, controller, ... } (allocates;
+                        <= 4 Hz); line ends with what the quality controller is doing (its target and state)
    scene.project(x,y,z) pixel position of a point (race x, height, three Z = minus race z) as { x, y, depth }
    scene.probe()        render, then read a 7x7 grid of pixels in the same task
    scene.forceContextLoss(), scene.forceContextRestore() (debug: WEBGL_lose_context), scene.dispose() (idempotent,
@@ -48,7 +50,7 @@
   const CLEAR = 0x1b2f5c;
   const STORE_KEY = 'lanefour.tier3d';
   const STORE_MS = 14 * 24 * 3600 * 1000;
-  const STABLE_MS = 30000; // a tier that held this long while racing is remembered
+  const STABLE_MS = 30000; // a tier that held this long while racing is remembered (the lowest one too)
   const RING = 300;
 
   // ------------------------------------------------------------------- start tier
@@ -64,6 +66,13 @@
       if (age >= -60000 && age < STORE_MS) return clamp(Math.max(Math.round(s.t) - 1, def), 0, TIERS.length - 1);
     }
     return def;
+  }
+  // What to remember once a tier has held for STABLE_MS of racing: nothing before that, and nothing while the tier
+  // is the default and there is no stored record (a healthy visit writes nothing). The next visit starts one step
+  // above it (pickStartTier), so a stored T3 does not run the whole cascade again. Pure.
+  function settledRecord(o) {
+    if (!(o.runMs >= STABLE_MS) || (o.tier <= o.def && !o.hadStored)) return null;
+    return { k: o.key, t: o.tier, at: o.now };
   }
   function safeStorage() { try { return root.localStorage || null; } catch (e) { return null; } }
   function readStored(st) { try { return st ? JSON.parse(st.getItem(STORE_KEY)) : null; } catch (e) { return null; } }
@@ -132,7 +141,7 @@
       retireCanvas();
       throw e;
     }
-    let world = null, actors = null, dead = false, failed = null, lost = false, checkPicture = false;
+    let world = null, actors = null, dead = false, lost = false, checkPicture = false;
     const scene = new T.Scene();
     const camera = new T.PerspectiveCamera(50, 1, 0.3, tier.far);
     camera.rotation.order = 'YXZ';
@@ -151,7 +160,7 @@
     let ringN = 0, ringPos = 0, lastCall = -1;
     let nextDraw = 0, lastCap = 0, accDt = 0, nowMs = 0;
     let lastRace = null, lastX = 0;
-    let visible = false, drawn = 0, stableT0 = 0, persisted = false, reduceNow = !!o.reduceMotion;
+    let visible = false, drawn = 0, runMs = 0, persisted = false, reduceNow = !!o.reduceMotion;
     let onVis = null;
 
     function disposeAll() { // used by dispose() and by a failed create()
@@ -167,13 +176,10 @@
       try { if (!gl.isContextLost()) renderer.forceContextLoss(); } catch (e) { /* keep going */ }
       retireCanvas();
     }
-    // The quality controller giving up on speed. Said once; the scene itself carries on drawing.
-    function fail(reason, message, emergency) {
-      if (failed) return;
-      failed = { reason, message };
-      if (typeof o.onFallback === 'function') {
-        try { o.onFallback({ reason, message, tier: tierIdx, emergency: !!emergency }); } catch (e) { /* the app's problem */ }
-      }
+    // The quality controller acted. The scene carries on drawing in 3D whatever it says.
+    function report(info) {
+      if (typeof o.onQuality !== 'function') return;
+      try { o.onQuality(info); } catch (e) { /* the app's problem */ }
     }
     // A lost context is not a failure of the scene: it keeps its canvas and everything three.js holds, stops
     // drawing, and picks up again when the browser restores the context. Whatever else is to be done about it
@@ -276,9 +282,8 @@
     function setTier(n) {
       if (dead) return tier;
       applyTier(n);
-      ctl.tier = tierIdx;
-      ctl.clear();
-      stableT0 = nowMs;
+      ctl.moveTo(tierIdx, nowMs); // the controller learns this tier's frame rate afresh, like after any change
+      runMs = 0;
       persisted = true;
       return tier;
     }
@@ -318,35 +323,47 @@
       nowMs = tMs;
       if (!visible) { // the first frame
         visible = true;
-        ctl.setView3d(tMs, true);
         ctl.discard(2);
         nextDraw = 0;
         accDt = 0;
         lastCall = -1;
         lastRace = null;
-        stableT0 = tMs;
+        runMs = 0;
         persisted = false;
       }
+      let iv = 0;
       if (lastCall >= 0) {
-        const iv = tMs - lastCall;
-        if (iv > 0 && iv < 1000) { ring[ringPos] = iv; ringPos = (ringPos + 1) % RING; if (ringN < RING) ringN++; }
+        iv = tMs - lastCall;
+        if (iv > 0 && iv < 1000) { ring[ringPos] = iv; ringPos = (ringPos + 1) % RING; if (ringN < RING) ringN++; } else iv = 0;
       }
       lastCall = tMs;
-      ctl.frame(tMs);
-      if (ctx.mode === 'camera' && ctx.poseFps > 0) ctl.pose(tMs, ctx.poseFps);
       const phase = ctx.phase;
+      // 15 fps behind a sheet: the app has no 'results' phase (the results sheet shows during 'finished'), so it says so with ctx.sheet
+      const sheet = ctx.sheet === true || phase === 'intro' || phase === 'results';
+      // Behind a sheet the frame rate says nothing about a race, so the controller does not measure. Elsewhere an
+      // ordinary step waits for a moment that is neither the countdown nor the race; an emergency does not.
       let verdict = 'none';
-      if (!lockTier) verdict = ctl.check(tMs, phase !== 'countdown' && phase !== 'running');
-      if (verdict === 'down') { applyTier(ctl.tier); stableT0 = tMs; persisted = false; }
+      if (!lockTier) {
+        if (sheet) ctl.idle(tMs);
+        else { ctl.frame(tMs); verdict = ctl.check(tMs, phase !== 'countdown' && phase !== 'running'); }
+      }
+      if (verdict === 'down' || verdict === 'emergency') {
+        const from = tierIdx;
+        applyTier(ctl.tier);
+        runMs = 0;
+        persisted = false;
+        report({ kind: 'tier', from, tier: tierIdx, lowest: tierIdx === TIERS.length - 1, emergency: verdict === 'emergency', reason: ctl.reason });
+      } else if (verdict === 'unplayable') {
+        report({ kind: 'unplayable', tier: tierIdx, reason: ctl.reason });
+      }
       accDt += ctx.dt;
 
-      // 15 fps behind a sheet: the app has no 'results' phase (the results sheet shows during 'finished'), so it says so with ctx.sheet
-      const cap = ctx.sheet === true || phase === 'intro' || phase === 'results' ? 15 : tier.fps === 30 ? 30 : 62;
+      const cap = sheet ? 15 : tier.fps === 30 ? 30 : 62;
       if (cap !== lastCap) { lastCap = cap; nextDraw = 0; }
       let did = false;
       if (t >= nextDraw - 0.0015) {
-        const iv = 1 / cap;
-        nextDraw = t - nextDraw > iv ? t + iv : nextDraw + iv;
+        const period = 1 / cap;
+        nextDraw = t - nextDraw > period ? t + period : nextDraw + period;
         const dt = Math.min(0.25, accDt);
         accDt = 0;
         const r = ctx.race;
@@ -359,12 +376,14 @@
         renderer.render(scene, camera);
         drawn++;
         did = true;
-        if (!persisted && !lockTier && phase === 'running' && tMs - stableT0 > STABLE_MS) {
-          persisted = true;
-          if (tierIdx > defTier || stored) writeStored(storage, { k: key, t: tierIdx, at: Date.now() });
+      }
+      if (phase === 'running') { // racing time at this tier, not wall time: a tier is remembered once it has held 30 s of racing
+        runMs += Math.min(iv, 100);
+        if (!persisted && !lockTier) {
+          const rec = settledRecord({ tier: tierIdx, def: defTier, hadStored: !!stored, runMs, key, now: Date.now() });
+          if (rec) { persisted = true; writeStored(storage, rec); }
         }
       }
-      if (verdict === 'to2d') fail(ctl.emergency ? 'emergency' : 'slow', ctl.emergency ? 'The 3D view could not keep up.' : 'The 3D view is too slow on this device.', ctl.emergency);
       return did;
     }
 
@@ -421,12 +440,14 @@
       const mp = (canvas.width * canvas.height) / 1e6;
       const calls = info.render.calls, tris = info.render.triangles;
       const rigName = cam.rig.name;
+      const cs = ctl.state(nowMs);
+      const tierText = tier.name + (cs.startTier !== tierIdx && !lockTier ? ' (from ' + TIERS[cs.startTier].name + ')' : '');
       return {
-        line: 'View: 3D chase · ' + tier.name + ' · ' + Math.round(fps) + ' fps (p95 ' + Math.round(p95) + ' ms) · ' + mp.toFixed(2) + ' MP · ' + calls + ' calls · ' + (tris / 1000).toFixed(1) + 'k tris · ' + rigName,
+        line: 'View: 3D chase · ' + tierText + ' · ' + Math.round(fps) + ' fps (p95 ' + Math.round(p95) + ' ms) · controller: ' + (lockTier ? 'tier locked' : ctl.describe(nowMs)) +
+          ' · ' + mp.toFixed(2) + ' MP · ' + calls + ' calls · ' + (tris / 1000).toFixed(1) + 'k tris · ' + rigName,
         tier: tierIdx, tierName: tier.name, rig: rigName, fps, p95ms: p95, megapixels: mp, pixelRatio: PR, cssWidth: W, cssHeight: H,
         calls, triangles: tris, geometries: info.memory.geometries, textures: info.memory.textures,
-        textureMB: world.stats().textureMB, frames: drawn, lost, locked: lockTier, controllerTarget: ctl.target,
-        fallback: failed ? failed.reason : null,
+        textureMB: world.stats().textureMB, frames: drawn, lost, locked: lockTier, controllerTarget: ctl.target, controller: cs,
       };
     }
 
@@ -470,5 +491,5 @@
     };
   }
 
-  Object.assign(root.LaneFour, { Scene3D: { create, ChaseCam, pickStartTier, tierKey } });
+  Object.assign(root.LaneFour, { Scene3D: { create, ChaseCam, pickStartTier, settledRecord, tierKey } });
 })(typeof window !== 'undefined' ? window : globalThis);

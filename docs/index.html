@@ -92,6 +92,30 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--amber); out
 body[data-phase="intro"] #notice, body[data-phase="finished"] #notice {
   top: calc(env(safe-area-inset-top, 0px) + 12px); transform: translateX(-50%);
 }
+
+/* The quality line: one small, quiet line once the graphics have been lowered as far as they go, or a hint if the
+   device still struggles. It stays until dismissed (it is not a toast). While the player is being set up it sits
+   under the HUD (#qnote); on the intro and results sheets it is the first line of the card instead, so it covers
+   nothing there; during the countdown, the race and the short finish before the results it is out of the way. */
+.qnote {
+  display: flex; align-items: center; gap: 2px;
+  padding: 3px 4px 3px 12px;
+  border-radius: 10px;
+  background: rgba(7, 11, 23, .82);
+  border: 1px solid var(--board-edge);
+  font: 500 13px/1.35 var(--body); color: var(--muted);
+}
+.qnote[data-kind="hint"] { color: var(--text); }
+.qnote .qx { flex: none; margin-left: auto; background: none; border: 0; font-size: 20px; line-height: 1; padding: 4px 8px; color: var(--muted); }
+.card-body > .qnote { align-self: flex-start; }
+#qnote {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  top: calc(env(safe-area-inset-top, 0px) + 142px);
+  z-index: 25;
+  width: max-content; max-width: min(92vw, 520px);
+}
+#intro:not([hidden]) ~ #qnote, #results:not([hidden]) ~ #qnote,
+body[data-phase="countdown"] #qnote, body[data-phase="running"] #qnote, body[data-phase="finished"] #results[hidden] ~ #qnote { display: none; }
 body[data-notice="failed"] .sheet { padding-top: calc(env(safe-area-inset-top, 0px) + 124px); }
 
 /* ---------- HUD ---------- */
@@ -450,6 +474,7 @@ kbd {
   <div class="card">
     <div class="lanes" aria-hidden="true"></div>
     <div class="card-body">
+      <div class="qnote" role="status" hidden><span class="qtext"></span><button class="qx" type="button" aria-label="Dismiss">×</button></div>
       <p class="eyebrow">Camera fitness prototype</p>
       <h1 id="introTitle" aria-label="Lane Four">Lane <span class="lane-num">4</span></h1>
       <p class="lede">Hurdles in your living room. Jog in place to run, squat to jump. Your camera does the tracking.</p>
@@ -476,6 +501,7 @@ kbd {
   <div class="card">
     <div class="lanes" aria-hidden="true"></div>
     <div class="card-body">
+      <div class="qnote" role="status" hidden><span class="qtext"></span><button class="qx" type="button" aria-label="Dismiss">×</button></div>
       <p class="eyebrow" id="resEvent">400 m hurdles</p>
       <h2 id="resTitle">Finished</h2>
       <div class="result-time"><span class="board"><span class="led" id="resTime">0:00.0</span></span><span class="best" id="resBest"></span></div>
@@ -523,6 +549,8 @@ kbd {
   <div><b id="noticeTitle"></b> <span id="noticeBody"></span></div>
   <button class="chip" id="btnReload" type="button" hidden>Reload</button>
 </div>
+
+<div id="qnote" class="qnote" role="status" hidden><span class="qtext"></span><button class="qx" type="button" aria-label="Dismiss">×</button></div>
 
 <script>
 /* Lane Four core: pose signals, detectors and race simulation.
@@ -1204,71 +1232,93 @@ kbd {
     return Math.min(d, t.dprCap, Math.sqrt((t.maxMP * 1e6) / (w * h)));
   }
 
-  // Decides when 3D should step down a tier or give up for 2D. Pure: it is fed
-  // timestamps in ms and returns a verdict, and never touches the renderer.
-  //
-  //   frame(t)           once per rAF with the rAF timestamp
-  //   pose(t, fps)       every frame in camera mode with S.poseFps
-  //   setView3d(t, on)   when the 3D view becomes (in)visible; capturing the 2D
-  //                      pose-rate baseline over the 2 s before the swap
-  //   discard(n)         after a resize, tier change or visibility change
-  //   clear()            when the tab becomes visible again
-  //   check(t, canApply) -> 'none' | 'down' | 'to2d'
-  //
-  // Frames are grouped into 250 ms windows (fps each), kept in a ring of 10. The
-  // target is the median window rate of the first 3 s, capped at 60, so a
-  // device locked at 30 Hz is not "slow". Down-only: a step happens when 7 of
-  // the 10 windows are under 0.85 x target, or in camera mode when pose fps
-  // stays under 22 for 3 s and under 0.8 x the 2D baseline (any baseline-less
-  // value under 22 counts). After a step: 8 s cooldown, windows cleared. At the
-  // last tier the same condition returns 'to2d'. Ten windows under 12 fps is an
-  // emergency and returns 'to2d' at once, even if canApply is false (which
-  // defers ordinary steps, e.g. during a race).
+  // Decides when 3D should lower its quality tier. Pure: it is fed timestamps in ms and returns a verdict, and never
+  // touches the renderer. It only ever LOWERS quality: no verdict leaves 3D.
+  //   frame(t)           once per rAF while the player is being drawn for (setup, ready, countdown, running, ...)
+  //   idle(t)            once per rAF behind a sheet (intro, results). Draws are capped at 15 fps there, so the frame
+  //                      rate says nothing about a race: nothing is measured, no verdict is given, what was measured
+  //                      is dropped, and the first two windows after the sheet are skipped
+  //   discard(n)         after a resize or tier change: skip the open window and the next n closed ones
+  //   clear()            when the tab becomes visible again: forget the windows
+  //   check(t, canApply) -> 'none' | 'down' | 'emergency' | 'unplayable'
+  //   state(t), describe(t)   what it is doing, for the Signals panel and for bug reports
+  // Frames are grouped into 250 ms windows (rate = frames / real elapsed ms) kept in a ring of 10:
+  //  * emergency: the newest 7 windows run under 12 fps over their real elapsed time: straight to the lowest tier, at
+  //    once, in any phase (ignores canApply and the cooldown), and ahead of an ordinary step on the same evidence.
+  //  * floor: 7 of 10 windows under 18 fps, whatever the target: one step down.
+  //  * slow: 7 of 10 windows under 0.85 x target: one step down, unless those windows are one steady cadence at 30, 24
+  //    or 20 fps (Low Power Mode, Energy Saver, a 30 Hz display): that is the display rate now, so it becomes the
+  //    target and nothing steps. The target is the median window rate of a tier's first 3 s (capped at 60), learned
+  //    again after every tier change; a median 10% above it raises it.
+  // Steps wait for canApply (no countdown or race) and an 8 s cooldown, and clear the windows. The lowest tier has
+  // nothing to step to: only 'unplayable' is left, once, after 10 s of windows under 15 fps. The pose rate plays no
+  // part: it is a property of the camera and the model, which a 3D tier cannot fix.
   const WINDOW_MS = 250;
   const RING = 10;
   const WARM_MS = 3000;
   const COOLDOWN_MS = 8000;
   const SLOW_FRAC = 0.85;
   const SLOW_WINDOWS = 7;
+  const FLOOR_FPS = 18;
   const EMERGENCY_FPS = 12;
-  const POSE_FLOOR = 22;
-  const POSE_HOLD_MS = 3000;
-  const POSE_REL = 0.8;
-  const BASE_MS = 2000;
+  const HINT_FPS = 15;
+  const HINT_MS = 10000;
+  const LOCKED_FPS = [30, 24, 20];
+  const LOCK_TOL = 0.08; // the windows' median this near a locked cadence, and this steady: 12% apart at most
+  const LOCK_SPREAD = 0.12;
+  const RAISE = 1.1;
+
+  // The display rate a sorted run of slow windows adopts: 0 unless, one outlier dropped at each end (the window the
+  // change fell in, a hitch), they are one steady locked cadence.
+  const medianOf = (a, n) => (a[(n - 1) >> 1] + a[n >> 1]) / 2;
+  function lockedRate(a, n) {
+    const c = a.subarray(1, n - 1);
+    const med = medianOf(c, c.length);
+    if (!(med > 0) || c[c.length - 1] - c[0] > LOCK_SPREAD * med) return 0;
+    return LOCKED_FPS.some((r) => Math.abs(med - r) <= LOCK_TOL * r) ? med : 0;
+  }
 
   class QualityController {
     constructor(opts) {
       this.tier = clamp(((opts && opts.tier) | 0), 0, TIERS.length - 1);
-      this.ring = new Float64Array(RING);
+      this.startTier = this.tier;
+      this.ring = new Float64Array(RING); // per window: fps, frames, ms
+      this.ringF = new Float64Array(RING);
+      this.ringD = new Float64Array(RING);
+      this.sorted = new Float64Array(RING);
       this.warm = new Float64Array(16);
-      this.scratch = new Float64Array(16);
-      this.psT = new Float64Array(256);
-      this.psV = new Float64Array(256);
       this.reset();
     }
 
-    // Full restart: windows, target estimation, cooldown, pose state.
-    reset() {
-      this.count = 0; // windows in the ring
+    reset() { // full restart: windows, target, cooldown, counters
+      this.target = 0; // fps; 0 until the first 3 s of this tier have been measured
+      this.adopted = false; // the target is a display rate adopted from a steady lower cadence
+      this.cooldownUntil = -1;
+      this.sheet = false;
+      this.hinted = false;
+      this.steps = 0;
+      this.reason = '';
+      this.lastT = -1;
+      this.warmN = this.skip = 0;
+      this.warmStart = -1;
+      this.wipe();
+    }
+
+    wipe() { // the windows and what was read from them, not the target
+      this.count = 0;
       this.pos = 0;
       this.winStart = -1;
       this.winFrames = 0;
-      this.lastT = -1;
-      this.skip = 0;
-      this.warmN = 0;
-      this.warmStart = -1;
-      this.target = 0; // fps; 0 until the first 3 s have been measured
-      this.cooldownUntil = -1;
-      this.done = false;
-      this.emergency = false;
-      this.baseline = null;
-      this.view3d = false;
-      this.slowSince = -1;
-      this.psN = 0;
-      this.psPos = 0;
+      this.hintSince = -1;
+      this.nSlow = 0;
+      this.nFloor = 0;
+      this.med = 0;
+      this.rate = 0;
+      this.span = 0;
     }
 
     frame(t) {
+      if (this.sheet) { this.sheet = false; this.lastT = -1; this.discard(2); }
       const gap = this.lastT < 0 ? 0 : t - this.lastT;
       this.lastT = t;
       if (gap > 1000 || gap < 0) this.discard(2); // a stall, not a slow frame
@@ -1281,90 +1331,136 @@ kbd {
       this.winFrames++;
       const el = t - this.winStart;
       if (el < WINDOW_MS) return;
-      const fps = (this.winFrames * 1000) / el;
+      const frames = this.winFrames;
       this.winStart = t;
       this.winFrames = 0;
       if (this.skip > 0) { this.skip--; return; }
+      this.close(frames, el, t);
+    }
+
+    idle() {
+      if (this.sheet) return;
+      this.sheet = true;
+      this.wipe();
+      this.lastT = -1;
+      if (this.target === 0) { this.warmN = 0; this.warmStart = -1; }
+    }
+
+    close(frames, el, t) {
+      const fps = (frames * 1000) / el;
       this.ring[this.pos] = fps;
+      this.ringF[this.pos] = frames;
+      this.ringD[this.pos] = el;
       this.pos = (this.pos + 1) % RING;
       if (this.count < RING) this.count++;
       if (this.target === 0) this.warmUp(fps, t);
+      if (this.tier >= TIERS.length - 1) {
+        if (fps >= HINT_FPS) this.hintSince = -1;
+        else if (this.hintSince < 0) this.hintSince = t - el;
+      }
+      this.analyse();
     }
 
     warmUp(fps, t) {
       if (this.warmN < this.warm.length) this.warm[this.warmN++] = fps;
       if (t - this.warmStart < WARM_MS || this.warmN < 4) return;
-      const m = this.scratch.subarray(0, this.warmN);
-      m.set(this.warm.subarray(0, this.warmN));
-      m.sort();
-      const mid = this.warmN >> 1;
-      const med = this.warmN % 2 ? m[mid] : (m[mid - 1] + m[mid]) / 2;
-      this.target = Math.min(60, med);
+      const m = this.warm.slice(0, this.warmN).sort();
+      this.target = Math.min(60, medianOf(m, this.warmN));
     }
 
-    // Skip the open window and the next n closed ones, and restart the pose timer.
-    discard(n) {
+    analyse() { // once per closed window: what the ring says
+      this.nSlow = this.nFloor = 0;
+      if (this.count < SLOW_WINDOWS) return;
+      let frames = 0;
+      let ms = 0;
+      for (let k = 1; k <= SLOW_WINDOWS; k++) { // the newest 7 windows, over their real elapsed time
+        const i = (this.pos - k + RING) % RING;
+        frames += this.ringF[i];
+        ms += this.ringD[i];
+      }
+      this.rate = (frames * 1000) / ms;
+      this.span = ms;
+      if (this.count < RING) return;
+      this.sorted.set(this.ring);
+      this.sorted.sort();
+      this.med = medianOf(this.sorted, RING);
+      while (this.nFloor < RING && this.sorted[this.nFloor] < FLOOR_FPS) this.nFloor++;
+      if (!(this.target > 0)) return;
+      let n = 0; // the windows under the limit are the lowest n of the sorted ring
+      while (n < RING && this.sorted[n] < SLOW_FRAC * this.target) n++;
+      if (n >= SLOW_WINDOWS) {
+        const lock = lockedRate(this.sorted.subarray(0, n), n);
+        if (lock) { this.target = lock; this.adopted = true; } else this.nSlow = n;
+      } else if (this.med > RAISE * this.target) {
+        this.target = Math.min(60, this.med);
+        this.adopted = false;
+      }
+    }
+
+    discard(n) { // skip the open window and the next n closed ones
       this.skip = Math.max(this.skip, n === undefined ? 2 : n);
       this.winStart = -1;
       this.winFrames = 0;
-      this.slowSince = -1;
+      this.hintSince = -1;
     }
 
     clear() {
-      this.count = 0;
-      this.pos = 0;
+      this.wipe();
       this.discard(2);
     }
 
-    pose(t, fps) {
-      if (!(fps > 0)) return;
-      if (!this.view3d) {
-        this.psT[this.psPos] = t;
-        this.psV[this.psPos] = fps;
-        this.psPos = (this.psPos + 1) % this.psT.length;
-        if (this.psN < this.psT.length) this.psN++;
-        return;
-      }
-      const bad = fps < POSE_FLOOR && (this.baseline === null || fps < POSE_REL * this.baseline);
-      if (!bad) this.slowSince = -1;
-      else if (this.slowSince < 0) this.slowSince = t;
-    }
-
-    setView3d(t, on) {
-      if (on === this.view3d) return;
-      this.view3d = on;
-      this.slowSince = -1;
-      if (!on) { this.psN = 0; this.psPos = 0; return; }
-      let sum = 0;
-      let n = 0;
-      for (let i = 0; i < this.psN; i++) {
-        if (t - this.psT[i] <= BASE_MS && t >= this.psT[i]) { sum += this.psV[i]; n++; }
-      }
-      this.baseline = n >= 5 ? sum / n : null;
+    moveTo(n, t) { // the windows go and the target is learned again (T3 is never judged against a T1 target)
+      if (n !== this.tier) this.steps++;
+      this.tier = n;
+      this.cooldownUntil = t + COOLDOWN_MS;
+      this.target = 0;
+      this.adopted = false;
+      this.warmN = 0;
+      this.warmStart = -1;
+      this.clear();
     }
 
     check(t, canApply) {
-      if (this.done) return 'none';
-      if (this.count === RING) {
-        let allDead = true;
-        for (let i = 0; i < RING; i++) if (this.ring[i] >= EMERGENCY_FPS) { allDead = false; break; }
-        if (allDead) { this.done = true; this.emergency = true; return 'to2d'; }
+      if (this.sheet) return 'none';
+      const last = TIERS.length - 1;
+      if (this.tier >= last) {
+        if (this.hinted || this.hintSince < 0 || t - this.hintSince < HINT_MS) return 'none';
+        this.hinted = true;
+        this.reason = 'under ' + HINT_FPS + ' fps for ' + Math.round((t - this.hintSince) / 1000) + ' s at the lowest tier';
+        return 'unplayable';
       }
-      if (t < this.cooldownUntil) return 'none';
-      let slow = false;
-      if (this.target > 0 && this.count === RING) {
-        let n = 0;
-        const lim = SLOW_FRAC * this.target;
-        for (let i = 0; i < RING; i++) if (this.ring[i] < lim) n++;
-        slow = n >= SLOW_WINDOWS;
+      if (this.count >= SLOW_WINDOWS && this.rate < EMERGENCY_FPS) {
+        this.reason = 'emergency: ' + this.rate.toFixed(1) + ' fps over the last ' + (this.span / 1000).toFixed(1) + ' s';
+        this.moveTo(last, t);
+        return 'emergency';
       }
-      if (!slow && this.view3d && this.slowSince >= 0 && t - this.slowSince >= POSE_HOLD_MS) slow = true;
-      if (!slow || !canApply) return 'none';
-      if (this.tier >= TIERS.length - 1) { this.done = true; return 'to2d'; }
-      this.tier++;
-      this.cooldownUntil = t + COOLDOWN_MS;
-      this.clear();
+      if (this.count < RING || t < this.cooldownUntil || !canApply) return 'none';
+      if (this.nFloor >= SLOW_WINDOWS) this.reason = 'floor: ' + this.nFloor + ' of ' + RING + ' windows under ' + FLOOR_FPS + ' fps (median ' + this.med.toFixed(1) + ')';
+      else if (this.nSlow >= SLOW_WINDOWS) this.reason = 'slow: ' + this.nSlow + ' of ' + RING + ' windows under ' + SLOW_FRAC + ' x ' + this.target.toFixed(0) + ' fps (median ' + this.med.toFixed(1) + ')';
+      else return 'none';
+      this.moveTo(this.tier + 1, t);
       return 'down';
+    }
+
+    state(t) { // allocates: for the Signals panel, not for every frame
+      const lowest = this.tier >= TIERS.length - 1;
+      const name = this.sheet ? 'sheet' : lowest ? 'lowest' : this.target === 0 ? 'learning' : t < this.cooldownUntil ? 'cooldown' : 'watching';
+      return {
+        name, tier: this.tier, startTier: this.startTier, steps: this.steps, target: this.target, adopted: this.adopted,
+        windows: this.count, slow: this.nSlow, floor: this.nFloor, median: this.med, rate: this.rate, reason: this.reason,
+        cooldownMs: Math.max(0, this.cooldownUntil - t), learnedMs: this.warmStart < 0 ? 0 : Math.max(0, t - this.warmStart),
+        hintMs: this.hintSince < 0 ? 0 : t - this.hintSince, hinted: this.hinted,
+      };
+    }
+
+    describe(t) {
+      const s = this.state(t);
+      switch (s.name) {
+        case 'sheet': return 'behind a sheet, not measuring';
+        case 'lowest': return 'lowest tier, hint after ' + HINT_MS / 1000 + ' s under ' + HINT_FPS + ' fps (' + (s.hintMs / 1000).toFixed(1) + ' s' + (s.hinted ? ', shown' : '') + ')';
+        case 'learning': return 'learning the frame rate (' + Math.min(WARM_MS, s.learnedMs) / 1000 + ' of ' + WARM_MS / 1000 + ' s)';
+        default: return 'target ' + s.target.toFixed(0) + ' fps' + (s.adopted ? ' (display rate)' : '') + ', ' + (s.name === 'cooldown' ? 'cooldown ' + (s.cooldownMs / 1000).toFixed(0) + ' s' : 'watching, ' + Math.max(s.slow, s.floor) + ' of ' + RING + ' windows slow');
+      }
     }
   }
 
@@ -2562,8 +2658,8 @@ kbd {
      canvas        the #world3d element (it gets a WebGL2 context; dispose() swaps it for a fresh clone)
      popLayer      the #popLayer element
      race          the current LaneFour.Race
-     tier          0..3 to start there; omit to pick (coarse pointer: T1 else T0, stepped from the stored tier)
-     lockTier      true: never change tier and never fall back for speed (?tier=N, tests)
+     tier          0..3 to start there; omit to pick (coarse pointer: T1 else T0, one step above the stored tier)
+     lockTier      true: the quality controller is never asked and the tier never changes (?tier=N, tests)
      reduceMotion  initial only; render(ctx) re-reads ctx.reduceMotion every frame
      onContextLost      function({ cause }) the graphics context is lost ('event' for webglcontextlost, 'poll' when
                         render() saw it first, 'visibility' when the tab became visible and found it lost). The scene
@@ -2574,19 +2670,21 @@ kbd {
                         are blank, which a real GPU process crash causes): the scene stays down, draws nothing, and the
                         app is to dispose it and create a new one. Called instead of onContextRestored, or, if the first
                         frame after it finds the textures blank, after it.
-     onFallback    function({ reason, message, tier, emergency }) called once when the quality controller gives up
-                   on speed: reason 'slow' or 'emergency'. The scene carries on drawing; what to do is the app's call.
+     onQuality     function(info) the quality controller acted. The scene is 3D whatever it says: there is no way out to 2D.
+                   { kind: 'tier', from, tier, lowest, emergency, reason }  after it lowered the tier (already applied)
+                   { kind: 'unplayable', tier, reason }  once, at the lowest tier, after 10 s under 15 fps
      dpr, coarse, storage   overrides for devicePixelRatio, (pointer:coarse) and localStorage (tests)
 
    scene.render(ctx)    once per rAF; returns true when it drew a frame (false while the context is lost).
-                        ctx = { race, av, phase, particles, popups, t, dt, reduceMotion, poseFps, mode, sheet }
+                        ctx = { race, av, phase, particles, popups, t, dt, reduceMotion, sheet }
                         (av = S.av, particles = S.particles, popups = S.popups, t seconds, dt clamped seconds,
-                        poseFps = S.poseFps, mode 'camera' | 'manual', sheet true while the intro or the results
-                        sheet covers the picture: 15 fps). Allocation free except popup style strings.
+                        sheet true while the intro or the results sheet covers the picture: drawn at 15 fps, and the
+                        quality controller does not measure). Allocation free except popup style strings.
    scene.onEvent(e)     every race event: 'hit' shakes the camera, 'clear' 'star' 'finish' cheer the stands
    scene.layout()       re-read the canvas size and DPR; true if anything changed
    scene.setTier(n)     force a tier (debug); scene.discardTiming() after anything that disturbs frame times
-   scene.stats()        { line, tier, tierName, rig, fps, p95ms, megapixels, calls, triangles, ... } (allocates; <= 4 Hz)
+   scene.stats()        { line, tier, tierName, rig, fps, p95ms, megapixels, calls, triangles, controller, ... } (allocates;
+                        <= 4 Hz); line ends with what the quality controller is doing (its target and state)
    scene.project(x,y,z) pixel position of a point (race x, height, three Z = minus race z) as { x, y, depth }
    scene.probe()        render, then read a 7x7 grid of pixels in the same task
    scene.forceContextLoss(), scene.forceContextRestore() (debug: WEBGL_lose_context), scene.dispose() (idempotent,
@@ -2604,7 +2702,7 @@ kbd {
   const CLEAR = 0x1b2f5c;
   const STORE_KEY = 'lanefour.tier3d';
   const STORE_MS = 14 * 24 * 3600 * 1000;
-  const STABLE_MS = 30000; // a tier that held this long while racing is remembered
+  const STABLE_MS = 30000; // a tier that held this long while racing is remembered (the lowest one too)
   const RING = 300;
 
   // ------------------------------------------------------------------- start tier
@@ -2620,6 +2718,13 @@ kbd {
       if (age >= -60000 && age < STORE_MS) return clamp(Math.max(Math.round(s.t) - 1, def), 0, TIERS.length - 1);
     }
     return def;
+  }
+  // What to remember once a tier has held for STABLE_MS of racing: nothing before that, and nothing while the tier
+  // is the default and there is no stored record (a healthy visit writes nothing). The next visit starts one step
+  // above it (pickStartTier), so a stored T3 does not run the whole cascade again. Pure.
+  function settledRecord(o) {
+    if (!(o.runMs >= STABLE_MS) || (o.tier <= o.def && !o.hadStored)) return null;
+    return { k: o.key, t: o.tier, at: o.now };
   }
   function safeStorage() { try { return root.localStorage || null; } catch (e) { return null; } }
   function readStored(st) { try { return st ? JSON.parse(st.getItem(STORE_KEY)) : null; } catch (e) { return null; } }
@@ -2688,7 +2793,7 @@ kbd {
       retireCanvas();
       throw e;
     }
-    let world = null, actors = null, dead = false, failed = null, lost = false, checkPicture = false;
+    let world = null, actors = null, dead = false, lost = false, checkPicture = false;
     const scene = new T.Scene();
     const camera = new T.PerspectiveCamera(50, 1, 0.3, tier.far);
     camera.rotation.order = 'YXZ';
@@ -2707,7 +2812,7 @@ kbd {
     let ringN = 0, ringPos = 0, lastCall = -1;
     let nextDraw = 0, lastCap = 0, accDt = 0, nowMs = 0;
     let lastRace = null, lastX = 0;
-    let visible = false, drawn = 0, stableT0 = 0, persisted = false, reduceNow = !!o.reduceMotion;
+    let visible = false, drawn = 0, runMs = 0, persisted = false, reduceNow = !!o.reduceMotion;
     let onVis = null;
 
     function disposeAll() { // used by dispose() and by a failed create()
@@ -2723,13 +2828,10 @@ kbd {
       try { if (!gl.isContextLost()) renderer.forceContextLoss(); } catch (e) { /* keep going */ }
       retireCanvas();
     }
-    // The quality controller giving up on speed. Said once; the scene itself carries on drawing.
-    function fail(reason, message, emergency) {
-      if (failed) return;
-      failed = { reason, message };
-      if (typeof o.onFallback === 'function') {
-        try { o.onFallback({ reason, message, tier: tierIdx, emergency: !!emergency }); } catch (e) { /* the app's problem */ }
-      }
+    // The quality controller acted. The scene carries on drawing in 3D whatever it says.
+    function report(info) {
+      if (typeof o.onQuality !== 'function') return;
+      try { o.onQuality(info); } catch (e) { /* the app's problem */ }
     }
     // A lost context is not a failure of the scene: it keeps its canvas and everything three.js holds, stops
     // drawing, and picks up again when the browser restores the context. Whatever else is to be done about it
@@ -2832,9 +2934,8 @@ kbd {
     function setTier(n) {
       if (dead) return tier;
       applyTier(n);
-      ctl.tier = tierIdx;
-      ctl.clear();
-      stableT0 = nowMs;
+      ctl.moveTo(tierIdx, nowMs); // the controller learns this tier's frame rate afresh, like after any change
+      runMs = 0;
       persisted = true;
       return tier;
     }
@@ -2874,35 +2975,47 @@ kbd {
       nowMs = tMs;
       if (!visible) { // the first frame
         visible = true;
-        ctl.setView3d(tMs, true);
         ctl.discard(2);
         nextDraw = 0;
         accDt = 0;
         lastCall = -1;
         lastRace = null;
-        stableT0 = tMs;
+        runMs = 0;
         persisted = false;
       }
+      let iv = 0;
       if (lastCall >= 0) {
-        const iv = tMs - lastCall;
-        if (iv > 0 && iv < 1000) { ring[ringPos] = iv; ringPos = (ringPos + 1) % RING; if (ringN < RING) ringN++; }
+        iv = tMs - lastCall;
+        if (iv > 0 && iv < 1000) { ring[ringPos] = iv; ringPos = (ringPos + 1) % RING; if (ringN < RING) ringN++; } else iv = 0;
       }
       lastCall = tMs;
-      ctl.frame(tMs);
-      if (ctx.mode === 'camera' && ctx.poseFps > 0) ctl.pose(tMs, ctx.poseFps);
       const phase = ctx.phase;
+      // 15 fps behind a sheet: the app has no 'results' phase (the results sheet shows during 'finished'), so it says so with ctx.sheet
+      const sheet = ctx.sheet === true || phase === 'intro' || phase === 'results';
+      // Behind a sheet the frame rate says nothing about a race, so the controller does not measure. Elsewhere an
+      // ordinary step waits for a moment that is neither the countdown nor the race; an emergency does not.
       let verdict = 'none';
-      if (!lockTier) verdict = ctl.check(tMs, phase !== 'countdown' && phase !== 'running');
-      if (verdict === 'down') { applyTier(ctl.tier); stableT0 = tMs; persisted = false; }
+      if (!lockTier) {
+        if (sheet) ctl.idle(tMs);
+        else { ctl.frame(tMs); verdict = ctl.check(tMs, phase !== 'countdown' && phase !== 'running'); }
+      }
+      if (verdict === 'down' || verdict === 'emergency') {
+        const from = tierIdx;
+        applyTier(ctl.tier);
+        runMs = 0;
+        persisted = false;
+        report({ kind: 'tier', from, tier: tierIdx, lowest: tierIdx === TIERS.length - 1, emergency: verdict === 'emergency', reason: ctl.reason });
+      } else if (verdict === 'unplayable') {
+        report({ kind: 'unplayable', tier: tierIdx, reason: ctl.reason });
+      }
       accDt += ctx.dt;
 
-      // 15 fps behind a sheet: the app has no 'results' phase (the results sheet shows during 'finished'), so it says so with ctx.sheet
-      const cap = ctx.sheet === true || phase === 'intro' || phase === 'results' ? 15 : tier.fps === 30 ? 30 : 62;
+      const cap = sheet ? 15 : tier.fps === 30 ? 30 : 62;
       if (cap !== lastCap) { lastCap = cap; nextDraw = 0; }
       let did = false;
       if (t >= nextDraw - 0.0015) {
-        const iv = 1 / cap;
-        nextDraw = t - nextDraw > iv ? t + iv : nextDraw + iv;
+        const period = 1 / cap;
+        nextDraw = t - nextDraw > period ? t + period : nextDraw + period;
         const dt = Math.min(0.25, accDt);
         accDt = 0;
         const r = ctx.race;
@@ -2915,12 +3028,14 @@ kbd {
         renderer.render(scene, camera);
         drawn++;
         did = true;
-        if (!persisted && !lockTier && phase === 'running' && tMs - stableT0 > STABLE_MS) {
-          persisted = true;
-          if (tierIdx > defTier || stored) writeStored(storage, { k: key, t: tierIdx, at: Date.now() });
+      }
+      if (phase === 'running') { // racing time at this tier, not wall time: a tier is remembered once it has held 30 s of racing
+        runMs += Math.min(iv, 100);
+        if (!persisted && !lockTier) {
+          const rec = settledRecord({ tier: tierIdx, def: defTier, hadStored: !!stored, runMs, key, now: Date.now() });
+          if (rec) { persisted = true; writeStored(storage, rec); }
         }
       }
-      if (verdict === 'to2d') fail(ctl.emergency ? 'emergency' : 'slow', ctl.emergency ? 'The 3D view could not keep up.' : 'The 3D view is too slow on this device.', ctl.emergency);
       return did;
     }
 
@@ -2977,12 +3092,14 @@ kbd {
       const mp = (canvas.width * canvas.height) / 1e6;
       const calls = info.render.calls, tris = info.render.triangles;
       const rigName = cam.rig.name;
+      const cs = ctl.state(nowMs);
+      const tierText = tier.name + (cs.startTier !== tierIdx && !lockTier ? ' (from ' + TIERS[cs.startTier].name + ')' : '');
       return {
-        line: 'View: 3D chase · ' + tier.name + ' · ' + Math.round(fps) + ' fps (p95 ' + Math.round(p95) + ' ms) · ' + mp.toFixed(2) + ' MP · ' + calls + ' calls · ' + (tris / 1000).toFixed(1) + 'k tris · ' + rigName,
+        line: 'View: 3D chase · ' + tierText + ' · ' + Math.round(fps) + ' fps (p95 ' + Math.round(p95) + ' ms) · controller: ' + (lockTier ? 'tier locked' : ctl.describe(nowMs)) +
+          ' · ' + mp.toFixed(2) + ' MP · ' + calls + ' calls · ' + (tris / 1000).toFixed(1) + 'k tris · ' + rigName,
         tier: tierIdx, tierName: tier.name, rig: rigName, fps, p95ms: p95, megapixels: mp, pixelRatio: PR, cssWidth: W, cssHeight: H,
         calls, triangles: tris, geometries: info.memory.geometries, textures: info.memory.textures,
-        textureMB: world.stats().textureMB, frames: drawn, lost, locked: lockTier, controllerTarget: ctl.target,
-        fallback: failed ? failed.reason : null,
+        textureMB: world.stats().textureMB, frames: drawn, lost, locked: lockTier, controllerTarget: ctl.target, controller: cs,
       };
     }
 
@@ -3026,7 +3143,7 @@ kbd {
     };
   }
 
-  Object.assign(root.LaneFour, { Scene3D: { create, ChaseCam, pickStartTier, tierKey } });
+  Object.assign(root.LaneFour, { Scene3D: { create, ChaseCam, pickStartTier, settledRecord, tierKey } });
 })(typeof window !== 'undefined' ? window : globalThis);
 
 </script>
@@ -3042,8 +3159,8 @@ kbd {
      classic        true for ?renderer=2d: nothing is loaded and the status is 'off'
      loadThree()    Promise of the three.js namespace; rejects with an Error whose message is the player-facing reason
      createScene(three, hooks)   the scene, or throws. hooks = { tier, onContextLost({ cause }), onContextRestored(),
-                                 onRestoreFailed({ reason }), onFallback({ reason }) }; tier is a number to start at
-                                 (after a re-creation) or null
+                                 onRestoreFailed({ reason }), onQuality(info) }; tier is a number to start at (after
+                                 a re-creation: the tier the old scene had reached) or null
      disposeScene(scene)         default scene.dispose()
      hasWebGL2()    false: do not even try (default: the WebGL2RenderingContext global exists)
      isHidden()     true while the tab is hidden (default document.hidden)
@@ -3060,6 +3177,9 @@ kbd {
                'failed'     hard failure: the classic view is showing, with view.reason as the why
      reason    why, for 'failed' and 'restoring'
      lost      the current scene's graphics context is lost right now: do not draw it
+     reduced   the quality controller has taken the scene to the lowest tier, on this page (stays true across
+               re-creations: the app says so once)
+     unplayable  at the lowest tier it was still under 15 fps for 10 s, on this page (the app gives a hint, once)
      scene, three, shown (the 3D canvas has drawn and is visible), attempts, losses, events
 
    vm.start()             begins loading three.js (call once, at page load)
@@ -3070,6 +3190,9 @@ kbd {
    vm.fail(reason, err)   hard failure (idempotent)
    vm.line(sceneLine)     the "View:" line of the Signals panel; sceneLine is the scene's own line while 'ready'
    vm.recent(n)           the last n events as text, oldest first
+
+   Quality is the scene's own business and never leaves 3D: its tier steps are logged ('tier') and, once the
+   lowest tier is reached, view.reduced says so. There is no speed fallback, no 'slow' state and no way to 2D.
 
    Context loss is recovered in place: the scene keeps its canvas and stops drawing, the app pauses a running
    race, and a restore resumes everything. If no restore arrives within 3 s, or the tab becomes visible with a
@@ -3107,6 +3230,7 @@ kbd {
       reason: '',
       scene: null, three: null, version: d.version || '',
       shown: false, lost: false, attempts: 0, losses: 0, events: [],
+      reduced: false, unplayable: false,
     };
 
     let gen = 0; // generation of the current scene: a hook of an older one is stale and ignored
@@ -3159,8 +3283,7 @@ kbd {
         onContextLost: (info) => contextLost(token, info),
         onContextRestored: () => contextRestored(token),
         onRestoreFailed: (info) => restoreFailed(token, info),
-        // The quality controller still gives up on speed in this build. Slow is never a reason to leave 3D.
-        onFallback: (info) => { if (token === gen) log('speed-fallback-ignored', info && info.reason); },
+        onQuality: (info) => quality(token, info),
       };
     }
 
@@ -3210,6 +3333,21 @@ kbd {
       log('recreate', cause);
       set('restoring', cause);
       retry(cause, null);
+    }
+
+    // ---------------------------------------------------------------- quality
+    // The scene lowered its own tier, or found the lowest one still unplayable. Logged, and the two facts the app
+    // shows once are kept on the view; the view itself (mode, status) never changes for speed.
+    function quality(token, info) {
+      if (token !== gen || !view.scene || !info) return;
+      if (info.kind === 'tier') {
+        lastTier = info.tier;
+        log('tier', 'T' + info.from + ' to T' + info.tier + (info.emergency ? ' (emergency)' : '') + ' · ' + (info.reason || ''));
+        if (info.lowest && !view.reduced) { view.reduced = true; emit(); }
+      } else if (info.kind === 'unplayable') {
+        log('unplayable', info.reason);
+        if (!view.unplayable) { view.unplayable = true; emit(); }
+      }
     }
 
     // ---------------------------------------------------------- context events
@@ -4927,7 +5065,7 @@ kbd {
       onContextLost: hooks.onContextLost,
       onContextRestored: hooks.onContextRestored,
       onRestoreFailed: hooks.onRestoreFailed,
-      onFallback: hooks.onFallback,
+      onQuality: hooks.onQuality,
     });
   }
 
@@ -4940,6 +5078,7 @@ kbd {
     if (view.mode === '2d') show2d();
     else if (view.shown && view.lost) el.world3d.classList.remove('on'); // a lost canvas is blank or glitched: show the night instead (it fades back in from renderWorld, after a frame)
     syncNotice();
+    syncQNote();
     syncStart();
     syncGraphicsHold();
   }
@@ -5005,6 +5144,32 @@ kbd {
     el.btnReload.hidden = kind !== 'failed';
   }
 
+  // Quality is the scene's business and never costs the player 3D. Lowering a tier says nothing; once the lowest tier
+  // is reached there is ONE small line ('reduced graphics'), and if even that runs under 15 fps for 10 s a hint with
+  // tips instead. A line stays until it is dismissed (it is not a toast and does not expire), is never shown again
+  // once dismissed, and sits out the countdown and the race (style.css). The Signals panel has the details.
+  const QNOTE = {
+    reduced: 'Reduced graphics for smooth play',
+    hint: 'Still struggling. Close other tabs, turn off Low Power Mode or Energy Saver, plug in, or move the camera back.',
+  };
+  const qDismissed = { reduced: false, hint: false };
+  const qnotes = Array.from(document.querySelectorAll('.qnote')); // under the HUD, and one in each sheet
+  let qKind = '';
+  function syncQNote() {
+    let kind = '';
+    if (view.mode === '3d') {
+      if (view.unplayable && !qDismissed.hint) kind = 'hint';
+      else if (view.reduced && !view.unplayable && !qDismissed.reduced) kind = 'reduced';
+    }
+    if (kind === qKind) return;
+    qKind = kind;
+    for (const n of qnotes) {
+      n.dataset.kind = kind;
+      n.hidden = !kind;
+      n.querySelector('.qtext').textContent = kind ? QNOTE[kind] : '';
+    }
+  }
+
   // While the graphics are being restored a running race is paused, and it picks up again by itself.
   let gfxHeld = false;
   function syncGraphicsHold() {
@@ -5026,7 +5191,7 @@ kbd {
   // One object, reused every frame, so the render path allocates nothing of its own.
   const rctx = {
     race: null, av: S.av, phase: 'intro', particles: null, popups: null,
-    t: 0, dt: 0, reduceMotion, poseFps: 0, mode: null, sheet: false,
+    t: 0, dt: 0, reduceMotion, sheet: false,
   };
   function renderWorld(t, dt) {
     if (view.mode === '2d') { render2d(t); return; }
@@ -5038,9 +5203,7 @@ kbd {
     rctx.popups = S.popups;
     rctx.t = t;
     rctx.dt = dt;
-    rctx.poseFps = S.poseFps;
-    rctx.mode = S.mode;
-    rctx.sheet = S.phase === 'intro' || !el.results.hidden; // behind a sheet the scene draws at 15 fps
+    rctx.sheet = S.phase === 'intro' || !el.results.hidden; // behind a sheet the scene draws at 15 fps and does not measure its frame rate
     let drew = false;
     try {
       drew = sc.render(rctx);
@@ -5144,6 +5307,11 @@ kbd {
     if (S.mode === 'camera' && S.phase !== 'intro') enterSetup();
   });
   el.btnReload.addEventListener('click', () => window.location.reload());
+  document.querySelectorAll('.qnote .qx').forEach((b) => b.addEventListener('click', () => {
+    if (qKind) qDismissed[qKind] = true;
+    if (qKind === 'hint') qDismissed.reduced = true;
+    syncQNote();
+  }));
   document.querySelectorAll('.pick button[data-dist]').forEach((b) => {
     b.addEventListener('click', () => {
       settings.distance = Number(b.dataset.dist);

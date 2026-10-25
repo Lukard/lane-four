@@ -9,8 +9,8 @@
      classic        true for ?renderer=2d: nothing is loaded and the status is 'off'
      loadThree()    Promise of the three.js namespace; rejects with an Error whose message is the player-facing reason
      createScene(three, hooks)   the scene, or throws. hooks = { tier, onContextLost({ cause }), onContextRestored(),
-                                 onRestoreFailed({ reason }), onFallback({ reason }) }; tier is a number to start at
-                                 (after a re-creation) or null
+                                 onRestoreFailed({ reason }), onQuality(info) }; tier is a number to start at (after
+                                 a re-creation: the tier the old scene had reached) or null
      disposeScene(scene)         default scene.dispose()
      hasWebGL2()    false: do not even try (default: the WebGL2RenderingContext global exists)
      isHidden()     true while the tab is hidden (default document.hidden)
@@ -27,6 +27,9 @@
                'failed'     hard failure: the classic view is showing, with view.reason as the why
      reason    why, for 'failed' and 'restoring'
      lost      the current scene's graphics context is lost right now: do not draw it
+     reduced   the quality controller has taken the scene to the lowest tier, on this page (stays true across
+               re-creations: the app says so once)
+     unplayable  at the lowest tier it was still under 15 fps for 10 s, on this page (the app gives a hint, once)
      scene, three, shown (the 3D canvas has drawn and is visible), attempts, losses, events
 
    vm.start()             begins loading three.js (call once, at page load)
@@ -37,6 +40,9 @@
    vm.fail(reason, err)   hard failure (idempotent)
    vm.line(sceneLine)     the "View:" line of the Signals panel; sceneLine is the scene's own line while 'ready'
    vm.recent(n)           the last n events as text, oldest first
+
+   Quality is the scene's own business and never leaves 3D: its tier steps are logged ('tier') and, once the
+   lowest tier is reached, view.reduced says so. There is no speed fallback, no 'slow' state and no way to 2D.
 
    Context loss is recovered in place: the scene keeps its canvas and stops drawing, the app pauses a running
    race, and a restore resumes everything. If no restore arrives within 3 s, or the tab becomes visible with a
@@ -74,6 +80,7 @@
       reason: '',
       scene: null, three: null, version: d.version || '',
       shown: false, lost: false, attempts: 0, losses: 0, events: [],
+      reduced: false, unplayable: false,
     };
 
     let gen = 0; // generation of the current scene: a hook of an older one is stale and ignored
@@ -126,8 +133,7 @@
         onContextLost: (info) => contextLost(token, info),
         onContextRestored: () => contextRestored(token),
         onRestoreFailed: (info) => restoreFailed(token, info),
-        // The quality controller still gives up on speed in this build. Slow is never a reason to leave 3D.
-        onFallback: (info) => { if (token === gen) log('speed-fallback-ignored', info && info.reason); },
+        onQuality: (info) => quality(token, info),
       };
     }
 
@@ -177,6 +183,21 @@
       log('recreate', cause);
       set('restoring', cause);
       retry(cause, null);
+    }
+
+    // ---------------------------------------------------------------- quality
+    // The scene lowered its own tier, or found the lowest one still unplayable. Logged, and the two facts the app
+    // shows once are kept on the view; the view itself (mode, status) never changes for speed.
+    function quality(token, info) {
+      if (token !== gen || !view.scene || !info) return;
+      if (info.kind === 'tier') {
+        lastTier = info.tier;
+        log('tier', 'T' + info.from + ' to T' + info.tier + (info.emergency ? ' (emergency)' : '') + ' · ' + (info.reason || ''));
+        if (info.lowest && !view.reduced) { view.reduced = true; emit(); }
+      } else if (info.kind === 'unplayable') {
+        log('unplayable', info.reason);
+        if (!view.unplayable) { view.unplayable = true; emit(); }
+      }
     }
 
     // ---------------------------------------------------------- context events

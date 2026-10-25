@@ -166,7 +166,7 @@ def test_c(p, flavour):
     readout = page.inner_text("#readout")
     if is3d:
         sight_checks(page, "C (after rotating)", rig="wide")
-        check("C: the Signals panel shows the 3D view line", re.search(r"View: 3D chase · T3 · \d+ fps \(p95 \d+ ms\) · [\d.]+ MP · \d+ calls · [\d.]+k tris · wide", readout) is not None, readout)
+        check("C: the Signals panel shows the 3D view line", re.search(r"View: 3D chase · T3 · \d+ fps \(p95 \d+ ms\) · controller: tier locked · [\d.]+ MP · \d+ calls · [\d.]+k tris · wide", readout) is not None, readout)
         check("C: ... and the last view events", "three-loaded" in readout and "revealed" in readout, readout)
         v = vinfo(page)
         check("C: the whole session used one scene", v["sceneId"] == scene_at_start, f"{scene_at_start} -> {v['sceneId']}")

@@ -75,6 +75,30 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--amber); out
 body[data-phase="intro"] #notice, body[data-phase="finished"] #notice {
   top: calc(env(safe-area-inset-top, 0px) + 12px); transform: translateX(-50%);
 }
+
+/* The quality line: one small, quiet line once the graphics have been lowered as far as they go, or a hint if the
+   device still struggles. It stays until dismissed (it is not a toast). While the player is being set up it sits
+   under the HUD (#qnote); on the intro and results sheets it is the first line of the card instead, so it covers
+   nothing there; during the countdown, the race and the short finish before the results it is out of the way. */
+.qnote {
+  display: flex; align-items: center; gap: 2px;
+  padding: 3px 4px 3px 12px;
+  border-radius: 10px;
+  background: rgba(7, 11, 23, .82);
+  border: 1px solid var(--board-edge);
+  font: 500 13px/1.35 var(--body); color: var(--muted);
+}
+.qnote[data-kind="hint"] { color: var(--text); }
+.qnote .qx { flex: none; margin-left: auto; background: none; border: 0; font-size: 20px; line-height: 1; padding: 4px 8px; color: var(--muted); }
+.card-body > .qnote { align-self: flex-start; }
+#qnote {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  top: calc(env(safe-area-inset-top, 0px) + 142px);
+  z-index: 25;
+  width: max-content; max-width: min(92vw, 520px);
+}
+#intro:not([hidden]) ~ #qnote, #results:not([hidden]) ~ #qnote,
+body[data-phase="countdown"] #qnote, body[data-phase="running"] #qnote, body[data-phase="finished"] #results[hidden] ~ #qnote { display: none; }
 body[data-notice="failed"] .sheet { padding-top: calc(env(safe-area-inset-top, 0px) + 124px); }
 
 /* ---------- HUD ---------- */

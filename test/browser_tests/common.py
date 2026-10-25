@@ -161,6 +161,48 @@ WATCH = """(() => {
   };
   requestAnimationFrame(loop);
 })();"""
+# Frame-rate stress for run F and E, installed before the app and off until a test asks: window.__stall(ms, every)
+# keeps the main thread busy for ms every `every` ms (what a synchronous pose call does; (0) stops it), and
+# window.__cap = fps holds rAF callbacks back to at most that cadence (Low Power Mode, Energy Saver; 0 is off).
+# TIERLOG keeps a timeline of the page's mode, status and tier (window.__tl) and an own rAF frame-rate meter in 500 ms
+# buckets (window.__fps), both independent of the app and of its quality controller.
+STRESS = """(() => {
+  let timer = 0;
+  window.__stall = (ms, every) => { clearInterval(timer); timer = 0; if (ms) timer = setInterval(() => { const e = performance.now() + ms; while (performance.now() < e) { /* busy */ } }, every); };
+  window.__cap = 0;
+  const raf = window.requestAnimationFrame.bind(window), last = new WeakMap();
+  window.requestAnimationFrame = (cb) => raf(function wrap(ts) {
+    const gap = window.__cap ? 1000 / window.__cap - 3 : 0;
+    if (gap && ts - (last.get(cb) || 0) < gap) { raf(wrap); return; }
+    last.set(cb, ts);
+    cb(ts);
+  });
+})();"""
+TIERLOG = """(() => {
+  window.__tl = []; window.__fps = [];
+  let prev = '';
+  const poll = () => {
+    const a = window.laneFour;
+    if (a) {
+      const v = a.view, s = v.scene, cur = [v.mode, v.status, s ? s.tier : -1, a.state.phase].join('|');
+      if (cur !== prev) { prev = cur; window.__tl.push({ t: Math.round(performance.now()), mode: v.mode, status: v.status, tier: s ? s.tier : -1, phase: a.state.phase }); }
+    }
+    setTimeout(poll, 100);
+  };
+  poll();
+  let n = 0, b = 0;
+  const loop = (now) => { requestAnimationFrame(loop); if (document.hidden) { n = 0; b = 0; return; } if (!b) b = now; n++; if (now - b >= 500) { window.__fps.push({ t: Math.round(now), fps: (n * 1000) / (now - b) }); n = 0; b = now; } };
+  requestAnimationFrame(loop);
+})();"""
+
+
+def camera_fps(fps):
+    """A camera that delivers `fps` frames a second: the page treats a change of the video's currentTime as a new pose frame."""
+    return """(() => { const d = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
+      Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', { configurable: true,
+        get() { const v = d.get.call(this); return this.id === 'cam' ? Math.floor(v * %d) / %d : v; }, set(x) { d.set.call(this, x); } }); })();""" % (fps, fps)
+
+
 CONNECTION_2G = """Object.defineProperty(navigator, 'connection', { configurable: true,
   value: { effectiveType: '2g', saveData: true, downlink: 0.1, addEventListener() {}, removeEventListener() {} } });"""
 STALE_2D = "window.__seedStale = true;"

@@ -75,6 +75,7 @@
   <div class="card">
     <div class="lanes" aria-hidden="true"></div>
     <div class="card-body">
+      <div class="qnote" role="status" hidden><span class="qtext"></span><button class="qx" type="button" aria-label="Dismiss">×</button></div>
       <p class="eyebrow">Camera fitness prototype</p>
       <h1 id="introTitle" aria-label="Lane Four">Lane <span class="lane-num">4</span></h1>
       <p class="lede">Hurdles in your living room. Jog in place to run, squat to jump. Your camera does the tracking.</p>
@@ -101,6 +102,7 @@
   <div class="card">
     <div class="lanes" aria-hidden="true"></div>
     <div class="card-body">
+      <div class="qnote" role="status" hidden><span class="qtext"></span><button class="qx" type="button" aria-label="Dismiss">×</button></div>
       <p class="eyebrow" id="resEvent">400 m hurdles</p>
       <h2 id="resTitle">Finished</h2>
       <div class="result-time"><span class="board"><span class="led" id="resTime">0:00.0</span></span><span class="best" id="resBest"></span></div>
@@ -148,6 +150,8 @@
   <div><b id="noticeTitle"></b> <span id="noticeBody"></span></div>
   <button class="chip" id="btnReload" type="button" hidden>Reload</button>
 </div>
+
+<div id="qnote" class="qnote" role="status" hidden><span class="qtext"></span><button class="qx" type="button" aria-label="Dismiss">×</button></div>
 
 <script>
 /*CORE*/

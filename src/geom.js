@@ -208,71 +208,93 @@
     return Math.min(d, t.dprCap, Math.sqrt((t.maxMP * 1e6) / (w * h)));
   }
 
-  // Decides when 3D should step down a tier or give up for 2D. Pure: it is fed
-  // timestamps in ms and returns a verdict, and never touches the renderer.
-  //
-  //   frame(t)           once per rAF with the rAF timestamp
-  //   pose(t, fps)       every frame in camera mode with S.poseFps
-  //   setView3d(t, on)   when the 3D view becomes (in)visible; capturing the 2D
-  //                      pose-rate baseline over the 2 s before the swap
-  //   discard(n)         after a resize, tier change or visibility change
-  //   clear()            when the tab becomes visible again
-  //   check(t, canApply) -> 'none' | 'down' | 'to2d'
-  //
-  // Frames are grouped into 250 ms windows (fps each), kept in a ring of 10. The
-  // target is the median window rate of the first 3 s, capped at 60, so a
-  // device locked at 30 Hz is not "slow". Down-only: a step happens when 7 of
-  // the 10 windows are under 0.85 x target, or in camera mode when pose fps
-  // stays under 22 for 3 s and under 0.8 x the 2D baseline (any baseline-less
-  // value under 22 counts). After a step: 8 s cooldown, windows cleared. At the
-  // last tier the same condition returns 'to2d'. Ten windows under 12 fps is an
-  // emergency and returns 'to2d' at once, even if canApply is false (which
-  // defers ordinary steps, e.g. during a race).
+  // Decides when 3D should lower its quality tier. Pure: it is fed timestamps in ms and returns a verdict, and never
+  // touches the renderer. It only ever LOWERS quality: no verdict leaves 3D.
+  //   frame(t)           once per rAF while the player is being drawn for (setup, ready, countdown, running, ...)
+  //   idle(t)            once per rAF behind a sheet (intro, results). Draws are capped at 15 fps there, so the frame
+  //                      rate says nothing about a race: nothing is measured, no verdict is given, what was measured
+  //                      is dropped, and the first two windows after the sheet are skipped
+  //   discard(n)         after a resize or tier change: skip the open window and the next n closed ones
+  //   clear()            when the tab becomes visible again: forget the windows
+  //   check(t, canApply) -> 'none' | 'down' | 'emergency' | 'unplayable'
+  //   state(t), describe(t)   what it is doing, for the Signals panel and for bug reports
+  // Frames are grouped into 250 ms windows (rate = frames / real elapsed ms) kept in a ring of 10:
+  //  * emergency: the newest 7 windows run under 12 fps over their real elapsed time: straight to the lowest tier, at
+  //    once, in any phase (ignores canApply and the cooldown), and ahead of an ordinary step on the same evidence.
+  //  * floor: 7 of 10 windows under 18 fps, whatever the target: one step down.
+  //  * slow: 7 of 10 windows under 0.85 x target: one step down, unless those windows are one steady cadence at 30, 24
+  //    or 20 fps (Low Power Mode, Energy Saver, a 30 Hz display): that is the display rate now, so it becomes the
+  //    target and nothing steps. The target is the median window rate of a tier's first 3 s (capped at 60), learned
+  //    again after every tier change; a median 10% above it raises it.
+  // Steps wait for canApply (no countdown or race) and an 8 s cooldown, and clear the windows. The lowest tier has
+  // nothing to step to: only 'unplayable' is left, once, after 10 s of windows under 15 fps. The pose rate plays no
+  // part: it is a property of the camera and the model, which a 3D tier cannot fix.
   const WINDOW_MS = 250;
   const RING = 10;
   const WARM_MS = 3000;
   const COOLDOWN_MS = 8000;
   const SLOW_FRAC = 0.85;
   const SLOW_WINDOWS = 7;
+  const FLOOR_FPS = 18;
   const EMERGENCY_FPS = 12;
-  const POSE_FLOOR = 22;
-  const POSE_HOLD_MS = 3000;
-  const POSE_REL = 0.8;
-  const BASE_MS = 2000;
+  const HINT_FPS = 15;
+  const HINT_MS = 10000;
+  const LOCKED_FPS = [30, 24, 20];
+  const LOCK_TOL = 0.08; // the windows' median this near a locked cadence, and this steady: 12% apart at most
+  const LOCK_SPREAD = 0.12;
+  const RAISE = 1.1;
+
+  // The display rate a sorted run of slow windows adopts: 0 unless, one outlier dropped at each end (the window the
+  // change fell in, a hitch), they are one steady locked cadence.
+  const medianOf = (a, n) => (a[(n - 1) >> 1] + a[n >> 1]) / 2;
+  function lockedRate(a, n) {
+    const c = a.subarray(1, n - 1);
+    const med = medianOf(c, c.length);
+    if (!(med > 0) || c[c.length - 1] - c[0] > LOCK_SPREAD * med) return 0;
+    return LOCKED_FPS.some((r) => Math.abs(med - r) <= LOCK_TOL * r) ? med : 0;
+  }
 
   class QualityController {
     constructor(opts) {
       this.tier = clamp(((opts && opts.tier) | 0), 0, TIERS.length - 1);
-      this.ring = new Float64Array(RING);
+      this.startTier = this.tier;
+      this.ring = new Float64Array(RING); // per window: fps, frames, ms
+      this.ringF = new Float64Array(RING);
+      this.ringD = new Float64Array(RING);
+      this.sorted = new Float64Array(RING);
       this.warm = new Float64Array(16);
-      this.scratch = new Float64Array(16);
-      this.psT = new Float64Array(256);
-      this.psV = new Float64Array(256);
       this.reset();
     }
 
-    // Full restart: windows, target estimation, cooldown, pose state.
-    reset() {
-      this.count = 0; // windows in the ring
+    reset() { // full restart: windows, target, cooldown, counters
+      this.target = 0; // fps; 0 until the first 3 s of this tier have been measured
+      this.adopted = false; // the target is a display rate adopted from a steady lower cadence
+      this.cooldownUntil = -1;
+      this.sheet = false;
+      this.hinted = false;
+      this.steps = 0;
+      this.reason = '';
+      this.lastT = -1;
+      this.warmN = this.skip = 0;
+      this.warmStart = -1;
+      this.wipe();
+    }
+
+    wipe() { // the windows and what was read from them, not the target
+      this.count = 0;
       this.pos = 0;
       this.winStart = -1;
       this.winFrames = 0;
-      this.lastT = -1;
-      this.skip = 0;
-      this.warmN = 0;
-      this.warmStart = -1;
-      this.target = 0; // fps; 0 until the first 3 s have been measured
-      this.cooldownUntil = -1;
-      this.done = false;
-      this.emergency = false;
-      this.baseline = null;
-      this.view3d = false;
-      this.slowSince = -1;
-      this.psN = 0;
-      this.psPos = 0;
+      this.hintSince = -1;
+      this.nSlow = 0;
+      this.nFloor = 0;
+      this.med = 0;
+      this.rate = 0;
+      this.span = 0;
     }
 
     frame(t) {
+      if (this.sheet) { this.sheet = false; this.lastT = -1; this.discard(2); }
       const gap = this.lastT < 0 ? 0 : t - this.lastT;
       this.lastT = t;
       if (gap > 1000 || gap < 0) this.discard(2); // a stall, not a slow frame
@@ -285,90 +307,136 @@
       this.winFrames++;
       const el = t - this.winStart;
       if (el < WINDOW_MS) return;
-      const fps = (this.winFrames * 1000) / el;
+      const frames = this.winFrames;
       this.winStart = t;
       this.winFrames = 0;
       if (this.skip > 0) { this.skip--; return; }
+      this.close(frames, el, t);
+    }
+
+    idle() {
+      if (this.sheet) return;
+      this.sheet = true;
+      this.wipe();
+      this.lastT = -1;
+      if (this.target === 0) { this.warmN = 0; this.warmStart = -1; }
+    }
+
+    close(frames, el, t) {
+      const fps = (frames * 1000) / el;
       this.ring[this.pos] = fps;
+      this.ringF[this.pos] = frames;
+      this.ringD[this.pos] = el;
       this.pos = (this.pos + 1) % RING;
       if (this.count < RING) this.count++;
       if (this.target === 0) this.warmUp(fps, t);
+      if (this.tier >= TIERS.length - 1) {
+        if (fps >= HINT_FPS) this.hintSince = -1;
+        else if (this.hintSince < 0) this.hintSince = t - el;
+      }
+      this.analyse();
     }
 
     warmUp(fps, t) {
       if (this.warmN < this.warm.length) this.warm[this.warmN++] = fps;
       if (t - this.warmStart < WARM_MS || this.warmN < 4) return;
-      const m = this.scratch.subarray(0, this.warmN);
-      m.set(this.warm.subarray(0, this.warmN));
-      m.sort();
-      const mid = this.warmN >> 1;
-      const med = this.warmN % 2 ? m[mid] : (m[mid - 1] + m[mid]) / 2;
-      this.target = Math.min(60, med);
+      const m = this.warm.slice(0, this.warmN).sort();
+      this.target = Math.min(60, medianOf(m, this.warmN));
     }
 
-    // Skip the open window and the next n closed ones, and restart the pose timer.
-    discard(n) {
+    analyse() { // once per closed window: what the ring says
+      this.nSlow = this.nFloor = 0;
+      if (this.count < SLOW_WINDOWS) return;
+      let frames = 0;
+      let ms = 0;
+      for (let k = 1; k <= SLOW_WINDOWS; k++) { // the newest 7 windows, over their real elapsed time
+        const i = (this.pos - k + RING) % RING;
+        frames += this.ringF[i];
+        ms += this.ringD[i];
+      }
+      this.rate = (frames * 1000) / ms;
+      this.span = ms;
+      if (this.count < RING) return;
+      this.sorted.set(this.ring);
+      this.sorted.sort();
+      this.med = medianOf(this.sorted, RING);
+      while (this.nFloor < RING && this.sorted[this.nFloor] < FLOOR_FPS) this.nFloor++;
+      if (!(this.target > 0)) return;
+      let n = 0; // the windows under the limit are the lowest n of the sorted ring
+      while (n < RING && this.sorted[n] < SLOW_FRAC * this.target) n++;
+      if (n >= SLOW_WINDOWS) {
+        const lock = lockedRate(this.sorted.subarray(0, n), n);
+        if (lock) { this.target = lock; this.adopted = true; } else this.nSlow = n;
+      } else if (this.med > RAISE * this.target) {
+        this.target = Math.min(60, this.med);
+        this.adopted = false;
+      }
+    }
+
+    discard(n) { // skip the open window and the next n closed ones
       this.skip = Math.max(this.skip, n === undefined ? 2 : n);
       this.winStart = -1;
       this.winFrames = 0;
-      this.slowSince = -1;
+      this.hintSince = -1;
     }
 
     clear() {
-      this.count = 0;
-      this.pos = 0;
+      this.wipe();
       this.discard(2);
     }
 
-    pose(t, fps) {
-      if (!(fps > 0)) return;
-      if (!this.view3d) {
-        this.psT[this.psPos] = t;
-        this.psV[this.psPos] = fps;
-        this.psPos = (this.psPos + 1) % this.psT.length;
-        if (this.psN < this.psT.length) this.psN++;
-        return;
-      }
-      const bad = fps < POSE_FLOOR && (this.baseline === null || fps < POSE_REL * this.baseline);
-      if (!bad) this.slowSince = -1;
-      else if (this.slowSince < 0) this.slowSince = t;
-    }
-
-    setView3d(t, on) {
-      if (on === this.view3d) return;
-      this.view3d = on;
-      this.slowSince = -1;
-      if (!on) { this.psN = 0; this.psPos = 0; return; }
-      let sum = 0;
-      let n = 0;
-      for (let i = 0; i < this.psN; i++) {
-        if (t - this.psT[i] <= BASE_MS && t >= this.psT[i]) { sum += this.psV[i]; n++; }
-      }
-      this.baseline = n >= 5 ? sum / n : null;
+    moveTo(n, t) { // the windows go and the target is learned again (T3 is never judged against a T1 target)
+      if (n !== this.tier) this.steps++;
+      this.tier = n;
+      this.cooldownUntil = t + COOLDOWN_MS;
+      this.target = 0;
+      this.adopted = false;
+      this.warmN = 0;
+      this.warmStart = -1;
+      this.clear();
     }
 
     check(t, canApply) {
-      if (this.done) return 'none';
-      if (this.count === RING) {
-        let allDead = true;
-        for (let i = 0; i < RING; i++) if (this.ring[i] >= EMERGENCY_FPS) { allDead = false; break; }
-        if (allDead) { this.done = true; this.emergency = true; return 'to2d'; }
+      if (this.sheet) return 'none';
+      const last = TIERS.length - 1;
+      if (this.tier >= last) {
+        if (this.hinted || this.hintSince < 0 || t - this.hintSince < HINT_MS) return 'none';
+        this.hinted = true;
+        this.reason = 'under ' + HINT_FPS + ' fps for ' + Math.round((t - this.hintSince) / 1000) + ' s at the lowest tier';
+        return 'unplayable';
       }
-      if (t < this.cooldownUntil) return 'none';
-      let slow = false;
-      if (this.target > 0 && this.count === RING) {
-        let n = 0;
-        const lim = SLOW_FRAC * this.target;
-        for (let i = 0; i < RING; i++) if (this.ring[i] < lim) n++;
-        slow = n >= SLOW_WINDOWS;
+      if (this.count >= SLOW_WINDOWS && this.rate < EMERGENCY_FPS) {
+        this.reason = 'emergency: ' + this.rate.toFixed(1) + ' fps over the last ' + (this.span / 1000).toFixed(1) + ' s';
+        this.moveTo(last, t);
+        return 'emergency';
       }
-      if (!slow && this.view3d && this.slowSince >= 0 && t - this.slowSince >= POSE_HOLD_MS) slow = true;
-      if (!slow || !canApply) return 'none';
-      if (this.tier >= TIERS.length - 1) { this.done = true; return 'to2d'; }
-      this.tier++;
-      this.cooldownUntil = t + COOLDOWN_MS;
-      this.clear();
+      if (this.count < RING || t < this.cooldownUntil || !canApply) return 'none';
+      if (this.nFloor >= SLOW_WINDOWS) this.reason = 'floor: ' + this.nFloor + ' of ' + RING + ' windows under ' + FLOOR_FPS + ' fps (median ' + this.med.toFixed(1) + ')';
+      else if (this.nSlow >= SLOW_WINDOWS) this.reason = 'slow: ' + this.nSlow + ' of ' + RING + ' windows under ' + SLOW_FRAC + ' x ' + this.target.toFixed(0) + ' fps (median ' + this.med.toFixed(1) + ')';
+      else return 'none';
+      this.moveTo(this.tier + 1, t);
       return 'down';
+    }
+
+    state(t) { // allocates: for the Signals panel, not for every frame
+      const lowest = this.tier >= TIERS.length - 1;
+      const name = this.sheet ? 'sheet' : lowest ? 'lowest' : this.target === 0 ? 'learning' : t < this.cooldownUntil ? 'cooldown' : 'watching';
+      return {
+        name, tier: this.tier, startTier: this.startTier, steps: this.steps, target: this.target, adopted: this.adopted,
+        windows: this.count, slow: this.nSlow, floor: this.nFloor, median: this.med, rate: this.rate, reason: this.reason,
+        cooldownMs: Math.max(0, this.cooldownUntil - t), learnedMs: this.warmStart < 0 ? 0 : Math.max(0, t - this.warmStart),
+        hintMs: this.hintSince < 0 ? 0 : t - this.hintSince, hinted: this.hinted,
+      };
+    }
+
+    describe(t) {
+      const s = this.state(t);
+      switch (s.name) {
+        case 'sheet': return 'behind a sheet, not measuring';
+        case 'lowest': return 'lowest tier, hint after ' + HINT_MS / 1000 + ' s under ' + HINT_FPS + ' fps (' + (s.hintMs / 1000).toFixed(1) + ' s' + (s.hinted ? ', shown' : '') + ')';
+        case 'learning': return 'learning the frame rate (' + Math.min(WARM_MS, s.learnedMs) / 1000 + ' of ' + WARM_MS / 1000 + ' s)';
+        default: return 'target ' + s.target.toFixed(0) + ' fps' + (s.adopted ? ' (display rate)' : '') + ', ' + (s.name === 'cooldown' ? 'cooldown ' + (s.cooldownMs / 1000).toFixed(0) + ' s' : 'watching, ' + Math.max(s.slow, s.floor) + ' of ' + RING + ' windows slow');
+      }
     }
   }
 
